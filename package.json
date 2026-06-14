@@ -1,0 +1,12 @@
+{
+  "name": "airbnb-archiver",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Firefox extension to archive Airbnb listings.",
+  "scripts": {
+    "dev": "web-ext run --source-dir extension --start-url https://www.airbnb.com/s/Asuncion--Paraguay/homes --browser-console"
+  },
+  "devDependencies": {
+    "web-ext": "^10.4.0"
+  }
+}

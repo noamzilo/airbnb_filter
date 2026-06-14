@@ -1,0 +1,18 @@
+{
+  "manifest_version": 2,
+  "name": "Airbnb Archiver",
+  "version": "0.0.1",
+  "description": "Archive Airbnb listings so they stop reappearing on the map and in results.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "airbnb-archiver@noam.local"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.airbnb.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
