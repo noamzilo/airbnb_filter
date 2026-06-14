@@ -29,6 +29,10 @@
 .archiver-star.on { background: #f5a623; }
 .archiver-star:hover { background: rgba(40, 40, 40, 1); }
 .archiver-star.on:hover { background: #e0951a; }
+.archiver-maybe { background: rgba(40, 40, 40, 0.85); font-weight: 700; }
+.archiver-maybe.on { background: #2f80ed; }
+.archiver-maybe:hover { background: rgba(40, 40, 40, 1); }
+.archiver-maybe.on:hover { background: #1f6fd6; }
 .archiver-trash { background: rgba(220, 20, 60, 0.92); }
 .archiver-trash:hover { background: #c1102f; }
 

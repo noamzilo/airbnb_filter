@@ -1,41 +1,42 @@
 // Airbnb Archiver — thin wrapper over browser.storage.local.
 // Shared by the background page, the content script, and the popup.
 //
+// A listing is in at most ONE category (a rubric): starred / maybe / archived.
 // Shape:
-//   archived: { "<roomId>": { title, price, url, thumbnail, archivedAt } }
-//   starred:  { "<roomId>": { title, price, url, thumbnail, starredAt } }
+//   starred:  { "<roomId>": { title, price, url, thumbnail, coord, ts } }
+//   maybe:    { "<roomId>": { ... } }
+//   archived: { "<roomId>": { ... } }
+//   starredData: { "<roomId>": <cached full search objects> }   // for always-show
 //   settings: { showArchived: boolean }
 
+const CATEGORIES = ["starred", "maybe", "archived"];
+
 const Store = {
-  async getArchived() {
-    const { archived = {} } = await browser.storage.local.get("archived");
-    return archived;
+  async getAll() {
+    const o = await browser.storage.local.get(CATEGORIES);
+    return { starred: o.starred || {}, maybe: o.maybe || {}, archived: o.archived || {} };
   },
-  async addArchived(id, snapshot) {
-    const archived = await Store.getArchived();
-    archived[id] = { ...snapshot, archivedAt: Date.now() };
-    await browser.storage.local.set({ archived });
-  },
-  async removeArchived(id) {
-    const archived = await Store.getArchived();
-    delete archived[id];
-    await browser.storage.local.set({ archived });
+  async getStarred() { return (await browser.storage.local.get("starred")).starred || {}; },
+  async getMaybe() { return (await browser.storage.local.get("maybe")).maybe || {}; },
+  async getArchived() { return (await browser.storage.local.get("archived")).archived || {}; },
+
+  async getCategory(id) {
+    const all = await Store.getAll();
+    for (const c of CATEGORIES) if (all[c][id]) return c;
+    return null;
   },
 
-  async getStarred() {
-    const { starred = {} } = await browser.storage.local.get("starred");
-    return starred;
+  // Put a listing in one category (or null to clear); removes it from the others.
+  async setCategory(id, snapshot, category) {
+    const all = await Store.getAll();
+    for (const c of CATEGORIES) delete all[c][id];
+    if (category) all[category][id] = { ...snapshot, ts: Date.now() };
+    await browser.storage.local.set(all);
   },
-  async addStarred(id, snapshot) {
-    const starred = await Store.getStarred();
-    starred[id] = { ...snapshot, starredAt: Date.now() };
-    await browser.storage.local.set({ starred });
-  },
-  async removeStarred(id) {
-    const starred = await Store.getStarred();
-    delete starred[id];
-    await browser.storage.local.set({ starred });
-  },
+
+  // Full-object cache for "always show starred" (managed by the background page).
+  async getStarredData() { return (await browser.storage.local.get("starredData")).starredData || {}; },
+  async setStarredData(data) { await browser.storage.local.set({ starredData: data }); },
 
   async getSettings() {
     const { settings = {} } = await browser.storage.local.get("settings");

@@ -7,6 +7,7 @@
     "dev": "web-ext run --source-dir extension --start-url https://www.airbnb.com/s/Asuncion--Paraguay/homes --browser-console",
     "build": "web-ext build --source-dir extension --artifacts-dir web-ext-artifacts --overwrite-dest",
     "sign": "web-ext sign --source-dir extension --artifacts-dir web-ext-artifacts --channel=unlisted",
+    "sign:listed": "web-ext sign --source-dir extension --artifacts-dir web-ext-artifacts --channel=listed",
     "bump": "node scripts/bump_version.js",
     "lint:ext": "web-ext lint --source-dir extension --output text"
   },

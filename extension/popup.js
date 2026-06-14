@@ -1,4 +1,4 @@
-// Airbnb Archiver — popup: Liked (starred) + Archived tabs.
+// Airbnb Archiver — popup: Liked / Maybe / Archived tabs.
 
 const toggleEl = document.getElementById("showArchived");
 
@@ -31,47 +31,40 @@ function row(id, snap, actionLabel, onAction) {
   return r;
 }
 
-function fill(listEl, map, sortKey, emptyMsg, actionLabel, onAction) {
-  const ids = Object.keys(map).sort((a, b) => (map[b][sortKey] || 0) - (map[a][sortKey] || 0));
+function fill(listEl, map, emptyMsg, actionLabel, onAction) {
+  const ids = Object.keys(map).sort((a, b) => (map[b].ts || 0) - (map[a].ts || 0));
   listEl.textContent = "";
   if (!ids.length) {
     const e = document.createElement("div");
     e.className = "empty";
     e.textContent = emptyMsg;
     listEl.appendChild(e);
-    return ids.length;
+    return 0;
   }
   for (const id of ids) listEl.appendChild(row(id, map[id], actionLabel, () => onAction(id)));
   return ids.length;
 }
 
 async function render() {
-  const [starred, archived, settings] = await Promise.all([
-    Store.getStarred(), Store.getArchived(), Store.getSettings(),
-  ]);
-  toggleEl.checked = settings.showArchived;
+  const { starred, maybe, archived } = await Store.getAll();
+  toggleEl.checked = (await Store.getSettings()).showArchived;
 
-  const nStar = fill(
-    document.getElementById("list-starred"), starred, "starredAt",
-    "Click ☆ on a listing to like it.", "Remove",
-    (id) => Store.removeStarred(id)
-  );
-  const nArch = fill(
-    document.getElementById("list-archived"), archived, "archivedAt",
-    "Click 🗑 on a listing to archive it.", "Unarchive",
-    (id) => Store.removeArchived(id)
-  );
+  const clear = (id) => Store.setCategory(id, null, null);
+  const nStar = fill(document.getElementById("list-starred"), starred, "Click ☆ on a listing to like it.", "Remove", clear);
+  const nMaybe = fill(document.getElementById("list-maybe"), maybe, "Click ? on a listing to mark it maybe.", "Remove", clear);
+  const nArch = fill(document.getElementById("list-archived"), archived, "Click 🗑 on a listing to archive it.", "Unarchive", clear);
 
   document.getElementById("count-starred").textContent = nStar;
+  document.getElementById("count-maybe").textContent = nMaybe;
   document.getElementById("count-archived").textContent = nArch;
 }
 
-// Tabs
 for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => {
     for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t === tab);
-    document.getElementById("panel-starred").hidden = tab.dataset.tab !== "starred";
-    document.getElementById("panel-archived").hidden = tab.dataset.tab !== "archived";
+    for (const name of ["starred", "maybe", "archived"]) {
+      document.getElementById("panel-" + name).hidden = tab.dataset.tab !== name;
+    }
   });
 }
 

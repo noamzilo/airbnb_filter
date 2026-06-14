@@ -6,8 +6,8 @@
     body { width: 360px; margin: 0; font: 13px sans-serif; color: #222; }
     header { padding: 12px 14px 0; }
     h1 { margin: 0; font-size: 15px; }
-    .tabs { display: flex; gap: 4px; padding: 8px 14px 0; }
-    .tab { flex: 1; padding: 8px; text-align: center; font-weight: 600; color: #717171; background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; }
+    .tabs { display: flex; gap: 2px; padding: 8px 10px 0; }
+    .tab { flex: 1; padding: 8px 4px; text-align: center; font-weight: 600; color: #717171; background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; }
     .tab.active { color: #222; border-bottom-color: #e0115f; }
     .toggle { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid #eee; border-bottom: 1px solid #eee; }
     .toggle label { cursor: pointer; }
@@ -26,13 +26,12 @@
   <header><h1>Airbnb Archiver</h1></header>
   <div class="tabs">
     <button class="tab active" data-tab="starred">★ Liked (<span id="count-starred">0</span>)</button>
+    <button class="tab" data-tab="maybe">? Maybe (<span id="count-maybe">0</span>)</button>
     <button class="tab" data-tab="archived">🗑 Archived (<span id="count-archived">0</span>)</button>
   </div>
 
-  <div id="panel-starred">
-    <div class="list" id="list-starred"></div>
-  </div>
-
+  <div id="panel-starred"><div class="list" id="list-starred"></div></div>
+  <div id="panel-maybe" hidden><div class="list" id="list-maybe"></div></div>
   <div id="panel-archived" hidden>
     <div class="toggle">
       <input type="checkbox" id="showArchived" />
