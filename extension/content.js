@@ -15,7 +15,7 @@ let starred = {};
 let showArchived = false;
 
 const CURRENCY = /[$€£₲¥₩₪₫฿]/;
-const UNDO_MS = 3000;
+const UNDO_MS = 1500;
 
 async function refreshState() {
   archived = await Store.getArchived();
