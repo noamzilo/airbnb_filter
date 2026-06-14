@@ -121,13 +121,28 @@ try:
       document.body.appendChild(document.createElement('span'));
     """)
     time.sleep(0.6)
-    archTitle = d.execute_script("return (Object.values(window.__arch)[0].title||'').slice(0,20).toLowerCase();")
+    archCoord = d.execute_script("return Object.values(window.__arch)[0].coord;")
     stillHidden = d.execute_script("""
-      const key = arguments[0];
-      const ms = [...document.querySelectorAll('gmp-advanced-marker')].filter(m => (m.textContent||'').toLowerCase().includes(key));
+      const c = arguments[0];
+      const ms = [...document.querySelectorAll('gmp-advanced-marker')].filter(m => m.getAttribute('position') === c);
       return ms.length > 0 && ms.every(m => m.style.display === 'none');
-    """, archTitle)
-    check("archived marker re-hidden after re-render", stillHidden, f"title='{archTitle}'")
+    """, archCoord)
+    check("archived marker re-hidden after re-render (by coord)", stillHidden, f"coord={archCoord}")
+
+    # 8) Regression: opening a DIFFERENT pill's popup must NOT get hidden by the
+    #    archived one (titles like "Apartment in <area>" are not unique).
+    other = d.execute_script("""
+      const arch = Object.values(window.__arch)[0].coord;
+      return [...document.querySelectorAll('gmp-advanced-marker')]
+        .find(m => m.getAttribute('position') && m.getAttribute('position') !== arch
+                && m.style.display !== 'none' && /[$€£₲]/.test(m.textContent||'')) || null;
+    """)
+    if other:
+        from selenium.webdriver.common.action_chains import ActionChains as AC
+        AC(d).move_to_element(other).pause(0.3).click(other).perform()
+        time.sleep(1.2)
+        otherStillVisible = d.execute_script("return arguments[0].style.display !== 'none';", other)
+        check("a different (non-archived) pill stays visible after opening", otherStillVisible)
 
     print("\n" + ("ALL PASS" if all(ok for ok,_ in results) else "SOME FAILED"), flush=True)
 finally:

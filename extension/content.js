@@ -102,35 +102,18 @@ function popupCardRoot(anchor) {
   return best;
 }
 
-// Map markers are <gmp-advanced-marker> web components whose text contains the
-// listing's title + price (no /rooms link, so id isn't available there). We
-// match a marker for a listing by its title (titles are effectively unique).
-function markerTitleKey(snapshot) {
-  return (snapshot.title || "").trim().slice(0, 20).toLowerCase();
-}
-
-// Show/hide every marker matching this listing. Returns how many matched.
-// Google Maps re-creates marker elements on render, so this is also run from
-// decorateAll() (via hideArchivedMarkers) to keep archived pins hidden.
-function setMarkersDisplay(snapshot, value) {
-  const key = markerTitleKey(snapshot);
-  if (!key) return 0;
-  let n = 0;
-  for (const m of document.querySelectorAll("gmp-advanced-marker")) {
-    if ((m.textContent || "").toLowerCase().includes(key)) { m.style.display = value; n++; }
-  }
-  return n;
-}
-
-// Persistently hide pins for already-archived listings (survives re-renders).
+// Map markers are <gmp-advanced-marker> web components with a precise
+// position="lat,lng" attribute. We key off that — titles like
+// "Apartment in Villa Morra" are NOT unique and would hide unrelated pins.
+// Google Maps re-creates marker elements on render, so decorateAll() re-runs
+// this to keep archived pins hidden until the interceptor drops them from data.
 function hideArchivedMarkers() {
   if (showArchived) return;
-  const keys = Object.values(archived).map(markerTitleKey).filter(Boolean);
-  if (!keys.length) return;
+  const coords = new Set(Object.values(archived).map((s) => s.coord).filter(Boolean));
+  if (!coords.size) return;
   for (const m of document.querySelectorAll("gmp-advanced-marker")) {
-    if (m.style.display === "none") continue;
-    const txt = (m.textContent || "").toLowerCase();
-    if (keys.some((k) => txt.includes(k))) m.style.display = "none";
+    const p = m.getAttribute("position");
+    if (p && coords.has(p)) m.style.display = "none";
   }
 }
 
@@ -173,28 +156,30 @@ function toastUndo(label, onUndo, onDone) {
 /* ----------------------------- trash flows ----------------------------- */
 
 function trashSideCard(id, snapshot, container) {
-  container.style.display = "none";
-  setMarkersDisplay(snapshot, "none"); // also drop the map pin immediately
+  container.style.display = "none"; // map pin (if any) clears on the next data fetch
   toastUndo(
     `Archiving “${truncate(snapshot.title || ("Listing " + id), 30)}”`,
-    () => { container.style.display = ""; setMarkersDisplay(snapshot, ""); },
+    () => { container.style.display = ""; },
     () => Store.addArchived(id, snapshot)
   );
 }
 
 function trashMapCard(id, snapshot, anchor) {
-  // The map card's own text is often empty; prefer the clicked marker's text.
-  const snap = (lastMarkerInfo && lastMarkerInfo.title)
-    ? { ...snapshot, title: lastMarkerInfo.title, price: lastMarkerInfo.price || snapshot.price }
-    : snapshot;
-  const cardRoot = popupCardRoot(anchor);   // the whole popup card
   const marker = lastMarker;
+  const coord = marker ? marker.getAttribute("position") : null; // precise pin key
+  // The map card's own text is often empty; prefer the clicked marker's text.
+  const snap = {
+    ...snapshot,
+    title: (lastMarkerInfo && lastMarkerInfo.title) || snapshot.title,
+    price: (lastMarkerInfo && lastMarkerInfo.price) || snapshot.price,
+    coord,
+  };
+  const cardRoot = popupCardRoot(anchor);   // the whole popup card
   cardRoot.style.display = "none";          // close the popup → back to map view
   if (marker) marker.style.display = "none"; // hide the exact clicked pin (immediate)
-  setMarkersDisplay(snap, "none");           // and any other title-matching pins
   toastUndo(
     `Archiving “${truncate(snap.title || ("Listing " + id), 30)}”`,
-    () => { cardRoot.style.display = ""; if (marker) marker.style.display = ""; setMarkersDisplay(snap, ""); },
+    () => { cardRoot.style.display = ""; if (marker) marker.style.display = ""; },
     () => Store.addArchived(id, snap)
   );
 }
