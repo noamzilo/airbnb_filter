@@ -111,6 +111,27 @@ term — *is that doable because IDs are static?* **Yes.**
   listing, Airbnb issues a new id and it would reappear as "new." Rare, outside
   our control, accepted under D6 ("if it breaks it breaks").
 
+### 2.5 Live-DOM recon via Selenium (done 2026-06-14)
+To stop guessing at the map DOM (and to let Claude self-test instead of the user
+hand-testing), we drive real Firefox with **Selenium** (geckodriver auto-fetched
+by Selenium Manager). Findings against the live page:
+- **Map markers are `<gmp-advanced-marker>` web components** (Google Advanced
+  Markers), NOT `div/span/button`. Each marker's `textContent` contains the
+  listing's **title + price**; it has a `position="lat,lng"` attr but **no
+  `/rooms` link / listing id**. → To remove an archived listing's pin we match
+  the marker by **title** (fallback: price), then hide it.
+- The map **popup card** (shown on marker click) has the reliable `/rooms/<id>`
+  link, but that link wraps only the image — **title/price are siblings**, so the
+  snapshot reads `container.innerText` (line 0 = title, first currency line =
+  price). There is also a `button[aria-label="Close"]` and several card-sized
+  elements over the map (a carousel), so "close" is done by hiding the
+  geometry-derived card root, not by "first /rooms link over map".
+- **Selenium `install_addon(temporary=True)` does NOT run content scripts** in
+  this setup (tested on example.com too). So the extension is exercised by
+  **injecting `content.js` with a stubbed `Store`/`browser`** onto the live page
+  (`scripts/test_decorator.py`) and asserting DOM outcomes — no screenshots
+  (token-cheap). The real extension is still loaded normally via `web-ext`.
+
 ---
 
 ## 3. Discussion
@@ -172,6 +193,12 @@ implementation.
 | D16 | The **interceptor is toggle-aware**: default → delete archived from the data; when "show archived" is ON → keep them but **flag** them so the decorator greys them + shows unarchive | Required to make D15's on-map toggle work; you can't grey what was deleted. |
 | D17 | Store a **small snapshot per archived listing** (id, title, thumbnail, price, room URL, archivedAt), not just the ID | The popup list must render archived listings even when they're not in the current search (so it can't refetch them). |
 | D18 | Persist the archived set in **`browser.storage.local`**, keyed by the permanent room id | The room id is static across refresh/close/search-change (§2.4), and local storage survives restarts → "archive once, filtered forever" works for free. |
+| D19 | **Supersedes D8/D9.** Do NOT decorate map price pills. Clicking a pill opens Airbnb's native popup card; you **trash from that popup card** (positioned below its close "X"). Side-list cards keep their trash. | Pin→listing-id can't be reliably read from the pill DOM (pins are client-rendered on a Google Map; id lives in React state). The popup card *has* a `/rooms/<id>` link, so id resolution is reliable there. User accepted opening pills natively + trashing from the popup. The map still gets cleaned because the interceptor removes archived ids from map data. |
+| D20 | Add a **⭐ Star ("Liked") feature**: a star button left of the trash on each card; starred listings go to the user's own "Liked" list (separate from Airbnb's heart). Starring does not hide. | User wants their own favourites list because Airbnb's heart/wishlist is "inconsistent." |
+| D21 | **Undo UX:** map trash → close the popup (Escape) and animate the matching **price pill** with a left→right progress bar + "Undo", then it disappears; **best-effort** (pill matched by visible price), falls back to a bottom **toast** with the same progress bar. Side-card trash uses the toast. Window = 3s. | Matches the user's desired "animate the price tag" feel; archiving itself is always reliable (interceptor), only the pill targeting is heuristic. |
+| D22 | Popup has **two tabs: ★ Liked and 🗑 Archived** (Archived keeps the show-archived toggle). Added an **SVG toolbar icon** for discoverability. | User couldn't find where archived listings live; they're in the toolbar popup. |
+| D23 | **Claude self-tests** by driving real Firefox with Selenium and asserting DOM outcomes as text (`scripts/test_decorator.py`), no screenshots. See `docs/closing-the-loop.md`. | User: "the fact that I have to be the one clicking … is a real issue. close the loop yourself." Screenshots are too token-expensive, so verification is text-only. |
+| D24 | **Immediate + persistent map feedback.** On trash we hide the exact clicked marker now AND re-hide archived markers on every render (`hideArchivedMarkers` in `decorateAll`), because Google Maps re-creates markers (a one-shot hide gets wiped). The popup card renders *inside* the selected marker, so a reliable title/price comes from the clicked marker's own text (glyph-stripped), and the marker-click capture listener ignores our own UI. | User: pin "doesn't immediately disappear from view" though it's gone after a zoom (interceptor). Needed instant feedback, not just on refetch. |
 
 **Resolved (2026-06-13):** The **first paint is fully baked into the HTML
 document** — the embedded `data-deferred-state-0` blob already contains all 18
@@ -195,8 +222,16 @@ Both are interceptable via Firefox `filterResponseData`.
 - [x] Feasibility confirmed against **live** data (§2.3).
 - [x] Initial-load vs XHR interception detail resolved (§4 "Resolved").
 - [x] Button UX + undo + unarchive decisions settled (D7–D18).
-- [ ] Write the technical implementation plan — **in plan mode**, not in this log.
-- [ ] Build.
+- [x] Milestone 0 (hello-world + `web-ext` live-reload) built & committed.
+- [x] **Interceptor + filter logic** built; filter proven against real data
+      (`scripts/test-filter.js`: archive 2 ids → removed from all 3 arrays).
+- [x] **Store, popup (list + unarchive + show-archived toggle)** built.
+- [x] **Decorator**: side-card trash (id from `/rooms/<id>` link), undo toast,
+      defensive hide, greying — built.
+- [x] **Map trashing reworked per D19**: pills open natively; trash from the
+      map popup card (reliable id via its `/rooms/<id>` link), placed below the
+      card's close "X". Pin-pill decoration removed.
+- [ ] Pick the permanent-install path (AMO sign vs Developer Edition).
 
 ---
 

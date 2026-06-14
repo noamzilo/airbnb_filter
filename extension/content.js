@@ -1,28 +1,307 @@
-// Airbnb Archiver — Milestone 0 (hello world)
-// Proves the extension loads, the content script matches airbnb.com pages,
-// DOM injection works, and a click handler fires. Nothing else yet.
+// Airbnb Archiver — the decorator (content script).
+// Adds ⭐ star + 🗑 trash controls to listing cards (side list and the map popup
+// card), the undo flow (bottom toast with a progress bar), and greying when
+// "show archived" is on. The hiding of archived listings is done by the
+// interceptor (background.js); this script also defensively hides any archived
+// listing React re-renders before the next fetch.
+//
+// Map price pills are not decorated: clicking a pill opens Airbnb's popup card,
+// and you star/trash from that card.
 
-console.log("[Airbnb Archiver] content script loaded");
+document.documentElement.setAttribute("data-archiver-loaded", "1"); // inject marker (first line)
 
-const button = document.createElement("button");
-button.textContent = "👋 Archiver works";
-button.style.cssText = [
-  "position: fixed",
-  "bottom: 20px",
-  "right: 20px",
-  "z-index: 999999",
-  "padding: 12px 16px",
-  "font: 600 14px sans-serif",
-  "color: #fff",
-  "background: #e0115f",
-  "border: none",
-  "border-radius: 8px",
-  "box-shadow: 0 2px 8px rgba(0,0,0,.3)",
-  "cursor: pointer",
-].join(";");
+let archived = {};
+let starred = {};
+let showArchived = false;
 
-button.addEventListener("click", () => {
-  alert("Hello from Airbnb Archiver!");
-});
+const CURRENCY = /[$€£₲¥₩₪₫฿]/;
+const UNDO_MS = 3000;
 
-document.body.appendChild(button);
+async function refreshState() {
+  archived = await Store.getArchived();
+  starred = await Store.getStarred();
+  showArchived = (await Store.getSettings()).showArchived;
+  decorateAll();
+}
+browser.storage.onChanged.addListener(refreshState);
+
+/* ----------------------------- helpers ----------------------------- */
+
+function debounce(fn, ms) {
+  let t;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+function truncate(s, n) { return s && s.length > n ? s.slice(0, n - 1) + "…" : s; }
+function idFromHref(href) { const m = href && href.match(/\/rooms\/(\d+)/); return m ? m[1] : null; }
+
+function mapElement() {
+  return (
+    document.querySelector('[data-testid="map/GoogleMap"]') ||
+    document.querySelector('[aria-roledescription="map"]') ||
+    document.querySelector('[aria-label="Map"]')
+  );
+}
+
+// Track the last-clicked map marker, so map-card trash can target the exact pin
+// and read a reliable title/price from the marker's own text.
+let lastMarker = null;
+let lastMarkerInfo = null;
+function parseMarkerText(text) {
+  // Strip our own injected glyphs (the popup card renders inside the marker).
+  const t = (text || "").replace(/[★☆🗑↩]/g, "").replace(/\bUnarchive\b/g, "").replace(/\s+/g, " ").trim();
+  const ci = t.search(CURRENCY);
+  const title = (ci > 0 ? t.slice(0, ci) : t).replace(/[,\s]+$/, "").trim();
+  const pm = t.match(/[$€£₲]\s?[\d.,]+(?:\s*[A-Z]{3})?/);
+  return { title, price: pm ? pm[0].replace(/\s+/g, " ").trim() : "" };
+}
+document.addEventListener("click", (e) => {
+  if (e.target.closest && e.target.closest(".archiver-actions, .archiver-toast")) return; // ignore our UI
+  const m = e.target.closest && e.target.closest("gmp-advanced-marker");
+  if (m) { lastMarker = m; lastMarkerInfo = parseMarkerText(m.textContent); }
+}, true);
+
+// Is this card sitting over the map? (a map popup card vs a side-list card)
+function isOverMap(el, mapEl) {
+  if (!mapEl) return false;
+  const r = el.getBoundingClientRect();
+  const mr = mapEl.getBoundingClientRect();
+  if (!r.width || !mr.width) return false;
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  return cx >= mr.left && cx <= mr.right && cy >= mr.top && cy <= mr.bottom;
+}
+
+/* ----------------------------- snapshot / price ----------------------------- */
+
+function snapshotFromCard(anchor, container, id) {
+  const img = container.querySelector("img");
+  // Title/price live as siblings of the (image-only) link, so read the card's
+  // visible text: first line = title, first line with a currency = price.
+  const lines = (container.innerText || "").split("\n").map((s) => s.trim()).filter(Boolean);
+  const title = (anchor.getAttribute("aria-label") || lines[0] || `Listing ${id}`).trim();
+  const price = lines.find((l) => CURRENCY.test(l)) || "";
+  return {
+    title: truncate(title, 120),
+    price,
+    url: new URL(anchor.getAttribute("href"), location.origin).href.split("?")[0],
+    thumbnail: img ? img.src : "",
+  };
+}
+
+/* ----------------------------- map popup helpers ----------------------------- */
+
+// Largest "card-sized" ancestor of the /rooms link — the whole popup card.
+// Geometry-based so it doesn't depend on Airbnb's (obfuscated) class names.
+function popupCardRoot(anchor) {
+  let el = anchor, best = anchor;
+  for (let i = 0; i < 12 && el.parentElement; i++) {
+    const r = el.getBoundingClientRect();
+    if (r.width > 0 && r.width < 460 && r.height > 0 && r.height < 460) best = el;
+    else if (r.width >= 460 || r.height >= 460) break;
+    el = el.parentElement;
+  }
+  return best;
+}
+
+// Map markers are <gmp-advanced-marker> web components whose text contains the
+// listing's title + price (no /rooms link, so id isn't available there). We
+// match a marker for a listing by its title (titles are effectively unique).
+function markerTitleKey(snapshot) {
+  return (snapshot.title || "").trim().slice(0, 20).toLowerCase();
+}
+
+// Show/hide every marker matching this listing. Returns how many matched.
+// Google Maps re-creates marker elements on render, so this is also run from
+// decorateAll() (via hideArchivedMarkers) to keep archived pins hidden.
+function setMarkersDisplay(snapshot, value) {
+  const key = markerTitleKey(snapshot);
+  if (!key) return 0;
+  let n = 0;
+  for (const m of document.querySelectorAll("gmp-advanced-marker")) {
+    if ((m.textContent || "").toLowerCase().includes(key)) { m.style.display = value; n++; }
+  }
+  return n;
+}
+
+// Persistently hide pins for already-archived listings (survives re-renders).
+function hideArchivedMarkers() {
+  if (showArchived) return;
+  const keys = Object.values(archived).map(markerTitleKey).filter(Boolean);
+  if (!keys.length) return;
+  for (const m of document.querySelectorAll("gmp-advanced-marker")) {
+    if (m.style.display === "none") continue;
+    const txt = (m.textContent || "").toLowerCase();
+    if (keys.some((k) => txt.includes(k))) m.style.display = "none";
+  }
+}
+
+/* ----------------------------- undo toast ----------------------------- */
+
+let toastEl = null, toastTimer = null;
+function removeToast() {
+  if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+  if (toastEl) { toastEl.remove(); toastEl = null; }
+}
+
+function toastUndo(label, onUndo, onDone) {
+  removeToast();
+  let cancelled = false;
+  toastEl = document.createElement("div");
+  toastEl.className = "archiver-toast";
+  const span = document.createElement("span");
+  span.textContent = label;
+  const undo = document.createElement("button");
+  undo.className = "archiver-undo";
+  undo.textContent = "Undo";
+  undo.addEventListener("click", () => { cancelled = true; removeToast(); onUndo && onUndo(); });
+  const bar = document.createElement("div");
+  bar.className = "archiver-progress";
+  const fill = document.createElement("div");
+  fill.className = "archiver-progress-fill";
+  bar.appendChild(fill);
+  toastEl.append(span, undo, bar);
+  document.body.appendChild(toastEl);
+
+  // Force a reflow so the transition always runs.
+  fill.style.width = "0%";
+  void fill.offsetWidth;
+  fill.style.transition = `width ${UNDO_MS}ms linear`;
+  fill.style.width = "100%";
+
+  toastTimer = setTimeout(() => { removeToast(); if (!cancelled) onDone && onDone(); }, UNDO_MS);
+}
+
+/* ----------------------------- trash flows ----------------------------- */
+
+function trashSideCard(id, snapshot, container) {
+  container.style.display = "none";
+  setMarkersDisplay(snapshot, "none"); // also drop the map pin immediately
+  toastUndo(
+    `Archiving “${truncate(snapshot.title || ("Listing " + id), 30)}”`,
+    () => { container.style.display = ""; setMarkersDisplay(snapshot, ""); },
+    () => Store.addArchived(id, snapshot)
+  );
+}
+
+function trashMapCard(id, snapshot, anchor) {
+  // The map card's own text is often empty; prefer the clicked marker's text.
+  const snap = (lastMarkerInfo && lastMarkerInfo.title)
+    ? { ...snapshot, title: lastMarkerInfo.title, price: lastMarkerInfo.price || snapshot.price }
+    : snapshot;
+  const cardRoot = popupCardRoot(anchor);   // the whole popup card
+  const marker = lastMarker;
+  cardRoot.style.display = "none";          // close the popup → back to map view
+  if (marker) marker.style.display = "none"; // hide the exact clicked pin (immediate)
+  setMarkersDisplay(snap, "none");           // and any other title-matching pins
+  toastUndo(
+    `Archiving “${truncate(snap.title || ("Listing " + id), 30)}”`,
+    () => { cardRoot.style.display = ""; if (marker) marker.style.display = ""; setMarkersDisplay(snap, ""); },
+    () => Store.addArchived(id, snap)
+  );
+}
+
+/* ----------------------------- controls ----------------------------- */
+
+function makeBtn(cls, glyph, title) {
+  const b = document.createElement("button");
+  b.className = "archiver-btn " + cls;
+  b.textContent = glyph;
+  b.title = title;
+  return b;
+}
+
+function makeStar(id, snap) {
+  const b = makeBtn("archiver-star", starred[id] ? "★" : "☆", "");
+  const set = (on) => {
+    b.classList.toggle("on", on);
+    b.textContent = on ? "★" : "☆";
+    b.title = on ? "Remove from liked" : "Add to liked";
+  };
+  set(!!starred[id]);
+  b.addEventListener("click", async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const on = !!(await Store.getStarred())[id];
+    if (on) { await Store.removeStarred(id); set(false); }
+    else { await Store.addStarred(id, snap); set(true); }
+  });
+  return b;
+}
+
+function makeUnarchive(id) {
+  const b = document.createElement("button");
+  b.className = "archiver-unarchive";
+  b.textContent = "↩ Unarchive";
+  b.addEventListener("click", async (e) => { e.preventDefault(); e.stopPropagation(); await Store.removeArchived(id); });
+  return b;
+}
+
+/* ----------------------------- cards ----------------------------- */
+
+function cardContainer(anchor) {
+  let el = anchor;
+  for (let i = 0; i < 6 && el.parentElement; i++) {
+    if (el.getAttribute && el.getAttribute("itemprop") === "itemListElement") break;
+    el = el.parentElement;
+  }
+  return el;
+}
+
+function decorateCards() {
+  const mapEl = mapElement();
+  for (const anchor of document.querySelectorAll('a[href*="/rooms/"]')) {
+    const id = idFromHref(anchor.getAttribute("href"));
+    if (!id) continue;
+    const container = cardContainer(anchor);
+    if (!container || container.dataset.archiverDone === "1") continue;
+
+    if (archived[id] && !showArchived) {
+      container.style.display = "none";
+      container.dataset.archiverDone = "1";
+      continue;
+    }
+
+    container.dataset.archiverDone = "1";
+    container.dataset.archiverId = id;
+    if (getComputedStyle(container).position === "static") container.style.position = "relative";
+
+    if (archived[id] && showArchived) {
+      container.classList.add("archiver-greyed");
+      container.appendChild(makeUnarchive(id));
+      continue;
+    }
+
+    const onMap = isOverMap(container, mapEl);
+    const snap = snapshotFromCard(anchor, container, id); // capture BEFORE injecting our UI
+
+    const actions = document.createElement("div");
+    actions.className = "archiver-actions" + (onMap ? " archiver-actions--map" : "");
+
+    const star = makeStar(id, snap);
+    const trash = makeBtn("archiver-trash", "🗑", "Archive this listing");
+    trash.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (onMap) trashMapCard(id, snap, anchor);
+      else trashSideCard(id, snap, container);
+    });
+
+    actions.append(star, trash); // star left of trash
+    container.appendChild(actions);
+  }
+}
+
+/* ----------------------------- orchestration ----------------------------- */
+
+function decorateAll() {
+  try { decorateCards(); } catch (e) { console.warn("[Archiver] decorateCards failed", e); }
+  try { hideArchivedMarkers(); } catch (e) { console.warn("[Archiver] hideArchivedMarkers failed", e); }
+}
+
+const observer = new MutationObserver(debounce(decorateAll, 250));
+
+function start() {
+  document.documentElement.setAttribute("data-archiver-loaded", "1");
+  refreshState();
+  observer.observe(document.body, { childList: true, subtree: true });
+  console.log("[Archiver] decorator active");
+}
+
+start();

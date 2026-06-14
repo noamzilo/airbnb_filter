@@ -1,0 +1,116 @@
+/* Airbnb Archiver — injected UI styles. Namespaced .archiver-* to avoid clashes. */
+
+/* Action toolbar on a card: [☆ star] [🗑 trash], top-right. */
+.archiver-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 50;
+  display: flex;
+  gap: 6px;
+}
+/* Map popup card has its own close "X" at top-right — sit below it. */
+.archiver-actions--map { top: 46px; }
+
+.archiver-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 30px;
+  text-align: center;
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+.archiver-star { background: rgba(40, 40, 40, 0.85); }
+.archiver-star.on { background: #f5a623; }
+.archiver-star:hover { background: rgba(40, 40, 40, 1); }
+.archiver-star.on:hover { background: #e0951a; }
+.archiver-trash { background: rgba(220, 20, 60, 0.92); }
+.archiver-trash:hover { background: #c1102f; }
+
+/* Greyed state shown when "show archived on map" is on. */
+.archiver-greyed { opacity: 0.45; filter: grayscale(1); }
+.archiver-unarchive {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 51;
+  padding: 4px 8px;
+  font: 600 11px sans-serif;
+  color: #fff;
+  background: rgba(34, 34, 34, 0.92);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* Map pill pending-archive animation: left→right progress fill + Undo overlay. */
+.archiver-pending { overflow: hidden; }
+.archiver-pill-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 100%;
+  background: rgba(220, 20, 60, 0.35);
+  pointer-events: none;
+  z-index: 1;
+}
+.archiver-pill-undo {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 700 12px sans-serif;
+  color: #fff;
+  background: rgba(34, 34, 34, 0.6);
+  cursor: pointer;
+}
+
+/* Bottom toast with a left→right progress bar. */
+.archiver-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 999999;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px 12px;
+  font: 14px sans-serif;
+  color: #fff;
+  background: #222;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.archiver-undo {
+  padding: 4px 10px;
+  font: 600 13px sans-serif;
+  color: #222;
+  background: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.archiver-progress {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 5px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.archiver-progress-fill {
+  width: 0;
+  height: 100%;
+  background: #fff;
+}

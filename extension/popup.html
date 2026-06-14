@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { width: 360px; margin: 0; font: 13px sans-serif; color: #222; }
+    header { padding: 12px 14px 0; }
+    h1 { margin: 0; font-size: 15px; }
+    .tabs { display: flex; gap: 4px; padding: 8px 14px 0; }
+    .tab { flex: 1; padding: 8px; text-align: center; font-weight: 600; color: #717171; background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; }
+    .tab.active { color: #222; border-bottom-color: #e0115f; }
+    .toggle { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid #eee; border-bottom: 1px solid #eee; }
+    .toggle label { cursor: pointer; }
+    .list { max-height: 360px; overflow-y: auto; }
+    .row { display: flex; gap: 10px; align-items: center; padding: 8px 14px; border-bottom: 1px solid #f3f3f3; }
+    .row img { width: 44px; height: 44px; object-fit: cover; border-radius: 6px; background: #eee; flex: none; }
+    .meta { flex: 1; min-width: 0; }
+    .meta a { color: #222; text-decoration: none; font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .meta a:hover { text-decoration: underline; }
+    .price { color: #717171; font-size: 12px; }
+    .act { padding: 5px 9px; font: 600 12px sans-serif; color: #fff; background: #222; border: none; border-radius: 6px; cursor: pointer; flex: none; }
+    .empty { padding: 24px 14px; text-align: center; color: #717171; }
+  </style>
+</head>
+<body>
+  <header><h1>Airbnb Archiver</h1></header>
+  <div class="tabs">
+    <button class="tab active" data-tab="starred">★ Liked (<span id="count-starred">0</span>)</button>
+    <button class="tab" data-tab="archived">🗑 Archived (<span id="count-archived">0</span>)</button>
+  </div>
+
+  <div id="panel-starred">
+    <div class="list" id="list-starred"></div>
+  </div>
+
+  <div id="panel-archived" hidden>
+    <div class="toggle">
+      <input type="checkbox" id="showArchived" />
+      <label for="showArchived">Show archived on map (greyed)</label>
+    </div>
+    <div class="list" id="list-archived"></div>
+  </div>
+
+  <script src="store.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
