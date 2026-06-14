@@ -68,6 +68,97 @@ const Filter = {
   escapeForScript(jsonText) {
     return jsonText.replace(/</g, "\\u003c");
   },
+
+  /* ---- always-show-starred: cache + re-injection ---- */
+
+  // { lat, lng } from a listing object, or null.
+  coordOf(item) {
+    const c = item && item.demandStayListing && item.demandStayListing.location
+      && item.demandStayListing.location.coordinate;
+    if (c && typeof c.latitude === "number" && typeof c.longitude === "number") {
+      return { lat: c.latitude, lng: c.longitude };
+    }
+    return null;
+  },
+
+  // First array found under each of the three known keys (live references).
+  locateArrays(root) {
+    const found = { searchResults: null, mapSearchResults: null, staysInViewport: null };
+    (function walk(node) {
+      if (Array.isArray(node)) { for (const c of node) walk(c); return; }
+      if (node && typeof node === "object") {
+        for (const k of Object.keys(node)) {
+          if (found[k] === null && Array.isArray(node[k])
+              && (k === "searchResults" || k === "mapSearchResults" || k === "staysInViewport")) {
+            found[k] = node[k];
+          }
+          walk(node[k]);
+        }
+      }
+    })(root);
+    return found;
+  },
+
+  // Record each listing's array objects + coordinate into `seen` (mutated).
+  collectSeen(root, seen) {
+    const arr = Filter.locateArrays(root);
+    const note = (it, field) => {
+      const id = Filter.itemId(it);
+      if (!id) return;
+      const e = (seen[id] = seen[id] || {});
+      e[field] = it;
+      const c = Filter.coordOf(it);
+      if (c) e.coord = c;
+    };
+    (arr.searchResults || []).forEach((it) => note(it, "searchResult"));
+    (arr.mapSearchResults || []).forEach((it) => note(it, "mapResult"));
+    (arr.staysInViewport || []).forEach((it) => note(it, "viewportPin"));
+  },
+
+  // Bounding box of listings actually returned (null if fewer than 2 coords).
+  bboxOf(items) {
+    let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity, n = 0;
+    for (const it of items || []) {
+      const c = Filter.coordOf(it);
+      if (!c) continue;
+      n++;
+      minLat = Math.min(minLat, c.lat); maxLat = Math.max(maxLat, c.lat);
+      minLng = Math.min(minLng, c.lng); maxLng = Math.max(maxLng, c.lng);
+    }
+    return n >= 2 ? { minLat, maxLat, minLng, maxLng } : null;
+  },
+
+  // Re-inject starred listings the response omitted but that fall in view.
+  // starredObjById: { id: { searchResult?, mapResult?, viewportPin?, coord } }
+  injectStarred(root, starredObjById) {
+    let injected = 0;
+    try {
+      const ids = Object.keys(starredObjById || {});
+      if (!ids.length) return 0;
+      const arr = Filter.locateArrays(root);
+      const bbox = Filter.bboxOf(arr.mapSearchResults || arr.searchResults || []);
+      if (!bbox) return 0;
+      const padLat = 0.2 * (bbox.maxLat - bbox.minLat);
+      const padLng = 0.2 * (bbox.maxLng - bbox.minLng);
+      const setOf = (a) => new Set((a || []).map(Filter.itemId).filter(Boolean));
+      const inMap = setOf(arr.mapSearchResults), inList = setOf(arr.searchResults), inVp = setOf(arr.staysInViewport);
+      const clone = (o) => JSON.parse(JSON.stringify(o));
+
+      for (const id of ids) {
+        const cached = starredObjById[id];
+        const c = cached && cached.coord;
+        if (!c) continue;
+        if (c.lat < bbox.minLat - padLat || c.lat > bbox.maxLat + padLat
+          || c.lng < bbox.minLng - padLng || c.lng > bbox.maxLng + padLng) continue;
+        let did = false;
+        if (arr.mapSearchResults && cached.mapResult && !inMap.has(id)) { arr.mapSearchResults.push(clone(cached.mapResult)); did = true; }
+        if (arr.staysInViewport && cached.viewportPin && !inVp.has(id)) { arr.staysInViewport.push(clone(cached.viewportPin)); did = true; }
+        if (arr.searchResults && cached.searchResult && !inList.has(id)) { arr.searchResults.push(clone(cached.searchResult)); did = true; }
+        if (did) injected++;
+      }
+    } catch (_) { /* never let injection break the response */ }
+    return injected;
+  },
 };
 
 // Export for Node tests; harmless in the browser.

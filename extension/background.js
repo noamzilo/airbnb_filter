@@ -1,18 +1,63 @@
 // Airbnb Archiver — the interceptor (the make-or-break piece).
-// Rewrites Airbnb's search data BEFORE the page renders it, so archived
-// listings never appear (cards, map cards, or map pins) and never come back
-// on pan/zoom. Firefox-only capability (filterResponseData). See PROJECT_LOG.md.
+// Rewrites Airbnb's search data BEFORE the page renders it: removes archived
+// listings, and re-injects starred listings Airbnb dropped (so they always show
+// on the map + list). Firefox-only capability (filterResponseData).
 
 let archivedSet = new Set();
+let starredSet = new Set();
+let starredCache = {};        // persisted full objects: { id: {searchResult,mapResult,viewportPin,coord} }
 let showArchived = false;
+const seen = {};              // session cache: { id: {searchResult,mapResult,viewportPin,coord} }
 
 async function refresh() {
-  const { archived = {}, settings = {} } = await browser.storage.local.get(["archived", "settings"]);
+  const { archived = {}, settings = {}, starred = {}, starredData = {} } =
+    await browser.storage.local.get(["archived", "settings", "starred", "starredData"]);
   archivedSet = new Set(Object.keys(archived));
+  starredSet = new Set(Object.keys(starred));
+  starredCache = starredData;
   showArchived = !!settings.showArchived;
 }
 refresh();
 browser.storage.onChanged.addListener(refresh);
+
+/* ---- persist starred listings' cached objects (throttled) ---- */
+let persistTimer = null, persistDirty = false;
+function persistStarredFromSeen() {
+  let changed = false;
+  for (const id of starredSet) {
+    if (seen[id] && seen[id].coord) { starredCache[id] = JSON.parse(JSON.stringify(seen[id])); changed = true; }
+  }
+  if (changed) {
+    persistDirty = true;
+    if (!persistTimer) persistTimer = setTimeout(flushStarred, 2000);
+  }
+}
+function flushStarred() {
+  persistTimer = null;
+  if (!persistDirty) return;
+  persistDirty = false;
+  browser.storage.local.set({ starredData: starredCache }).catch(() => {});
+}
+
+function pickStarredObjs() {
+  const out = {};
+  for (const id of starredSet) {
+    const o = seen[id] || starredCache[id];
+    if (o && o.coord) out[id] = o;
+  }
+  return out;
+}
+
+/* ---- core: parse once, learn, remove archived, inject starred ---- */
+function processJson(text) {
+  const root = JSON.parse(text);
+  Filter.collectSeen(root, seen);
+  persistStarredFromSeen();
+  const removed = showArchived ? 0 : Filter.filterNode(root, archivedSet);
+  const injected = Filter.injectStarred(root, pickStarredObjs());
+  if (removed || injected) console.log(`[Archiver] removed ${removed}, injected ${injected}`);
+  return JSON.stringify(root);
+}
 
 function concatChunks(chunks) {
   let len = 0;
@@ -23,40 +68,25 @@ function concatChunks(chunks) {
   return out;
 }
 
-// Rewrite a raw JSON response (the StaysSearch XHR).
 function rewriteJson(text) {
-  try {
-    const { text: out, removed } = Filter.filterJsonText(text, archivedSet);
-    if (removed) console.log(`[Archiver] removed ${removed} archived listing(s) from XHR`);
-    return out;
-  } catch (e) {
-    console.warn("[Archiver] XHR JSON parse failed, passing through", e);
-    return text;
-  }
+  try { return processJson(text); }
+  catch (e) { console.warn("[Archiver] XHR process failed, passing through", e); return text; }
 }
 
-// Rewrite the initial HTML document: filter the JSON embedded in each
-// <script id="data-deferred-state-N"> blob, then splice it back in.
 function rewriteHtml(text) {
   return text.replace(
     /(<script id="data-deferred-state-\d+"[^>]*>)([\s\S]*?)(<\/script>)/g,
     (full, open, json, close) => {
-      try {
-        const { text: out, removed } = Filter.filterJsonText(json, archivedSet);
-        if (removed) console.log(`[Archiver] removed ${removed} archived listing(s) from HTML blob`);
-        return open + Filter.escapeForScript(out) + close;
-      } catch (e) {
-        console.warn("[Archiver] HTML blob parse failed, passing through", e);
-        return full;
-      }
+      try { return open + Filter.escapeForScript(processJson(json)) + close; }
+      catch (e) { console.warn("[Archiver] HTML blob process failed, passing through", e); return full; }
     }
   );
 }
 
 browser.webRequest.onBeforeRequest.addListener(
   (details) => {
-    // Nothing to do: let the response stream through untouched.
-    if (showArchived || archivedSet.size === 0) return;
+    // Nothing to remove or inject: let the response stream through untouched.
+    if (archivedSet.size === 0 && starredSet.size === 0) return;
 
     const isDoc = details.type === "main_frame";
     const filter = browser.webRequest.filterResponseData(details.requestId);
