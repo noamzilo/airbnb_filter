@@ -4,7 +4,11 @@
   "private": true,
   "description": "Firefox extension to archive Airbnb listings.",
   "scripts": {
-    "dev": "web-ext run --source-dir extension --start-url https://www.airbnb.com/s/Asuncion--Paraguay/homes --browser-console"
+    "dev": "web-ext run --source-dir extension --start-url https://www.airbnb.com/s/Asuncion--Paraguay/homes --browser-console",
+    "build": "web-ext build --source-dir extension --artifacts-dir web-ext-artifacts --overwrite-dest",
+    "sign": "web-ext sign --source-dir extension --artifacts-dir web-ext-artifacts --channel=unlisted",
+    "bump": "node scripts/bump_version.js",
+    "lint:ext": "web-ext lint --source-dir extension --output text"
   },
   "devDependencies": {
     "web-ext": "^10.4.0"

@@ -145,3 +145,9 @@ vite.config.ts.timestamp-*
 # Research / recon scratch files (reproducible via curl; findings live in PROJECT_LOG.md)
 search.html
 state.json
+
+# Built/signed extension packages
+web-ext-artifacts/
+
+# AMO signing credentials (never commit)
+amo.env
