@@ -8,6 +8,7 @@
 document.documentElement.setAttribute("data-archiver-loaded", "1"); // inject marker
 
 let cats = { starred: {}, maybe: {}, archived: {} };
+let tagCoords = {};
 let showArchived = false;
 
 const CURRENCY = /[$€£₲¥₩₪₫฿]/;
@@ -15,6 +16,7 @@ const UNDO_MS = 1500;
 
 async function refreshState() {
   cats = await Store.getAll();
+  tagCoords = await Store.getTagCoords();
   showArchived = (await Store.getSettings()).showArchived;
   decorateAll();
 }
@@ -102,6 +104,66 @@ function hideArchivedMarkers() {
   for (const m of document.querySelectorAll("gmp-advanced-marker")) {
     const p = m.getAttribute("position");
     if (p && coords.has(p)) m.style.display = "none";
+  }
+}
+
+/* ----------------------------- pin colouring ----------------------------- */
+// Markers expose only position="lat,lng"; map starred/maybe ids -> coords via
+// tagCoords (from the interceptor) or the snapshot's own coord.
+function parsePos(s) {
+  if (!s) return null;
+  const p = String(s).split(",");
+  const lat = parseFloat(p[0]), lng = parseFloat(p[1]);
+  return isFinite(lat) && isFinite(lng) ? { lat, lng } : null;
+}
+function coordList(catMap) {
+  const out = [];
+  for (const id of Object.keys(catMap)) {
+    const c = tagCoords[id] || parsePos(catMap[id] && catMap[id].coord);
+    if (c) out.push(c);
+  }
+  return out;
+}
+function matchAny(pos, list) {
+  return list.some((c) => Math.abs(c.lat - pos.lat) < 2e-4 && Math.abs(c.lng - pos.lng) < 2e-4);
+}
+function findBubble(m) {
+  for (const el of m.querySelectorAll("div")) {
+    const s = getComputedStyle(el);
+    if (parseFloat(s.borderRadius) >= 14 && s.backgroundColor && s.backgroundColor !== "rgba(0, 0, 0, 0)") return el;
+  }
+  return null;
+}
+function paintMarker(m, cls) {
+  const bubble = findBubble(m);
+  if (!bubble) return;
+  const bg = cls === "starred" ? "#2f80ed" : "#f2c200";
+  const fg = cls === "starred" ? "#ffffff" : "#1a1a1a";
+  bubble.style.setProperty("background-color", bg, "important");
+  bubble.querySelectorAll("*").forEach((e) => e.style.setProperty("color", fg, "important"));
+  m.dataset.archiverColor = cls;
+}
+function clearMarkerColor(m) {
+  const bubble = findBubble(m);
+  if (bubble) {
+    bubble.style.removeProperty("background-color");
+    bubble.querySelectorAll("*").forEach((e) => e.style.removeProperty("color"));
+  }
+  delete m.dataset.archiverColor;
+}
+function colorMarkers() {
+  const starred = coordList(cats.starred);
+  const maybe = coordList(cats.maybe);
+  for (const m of document.querySelectorAll("gmp-advanced-marker")) {
+    if (m.style.display === "none") continue;
+    const pos = parsePos(m.getAttribute("position"));
+    let cls = null;
+    if (pos) {
+      if (matchAny(pos, starred)) cls = "starred";
+      else if (matchAny(pos, maybe)) cls = "maybe";
+    }
+    if (cls) { if (m.dataset.archiverColor !== cls) paintMarker(m, cls); }
+    else if (m.dataset.archiverColor) clearMarkerColor(m);
   }
 }
 
@@ -253,6 +315,7 @@ function decorateCards() {
 function decorateAll() {
   try { decorateCards(); } catch (e) { console.warn("[Archiver] decorateCards failed", e); }
   try { hideArchivedMarkers(); } catch (e) { console.warn("[Archiver] hideArchivedMarkers failed", e); }
+  try { colorMarkers(); } catch (e) { console.warn("[Archiver] colorMarkers failed", e); }
 }
 
 const observer = new MutationObserver(debounce(decorateAll, 250));

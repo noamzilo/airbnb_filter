@@ -5,38 +5,48 @@
 
 let archivedSet = new Set();
 let starredSet = new Set();
+let maybeSet = new Set();
 let starredCache = {};        // persisted full objects: { id: {searchResult,mapResult,viewportPin,coord} }
+let tagCoordsCache = {};      // persisted { id: {lat,lng} } for starred+maybe (pin colouring)
 let showArchived = false;
 const seen = {};              // session cache: { id: {searchResult,mapResult,viewportPin,coord} }
 
 async function refresh() {
-  const { archived = {}, settings = {}, starred = {}, starredData = {} } =
-    await browser.storage.local.get(["archived", "settings", "starred", "starredData"]);
+  const { archived = {}, settings = {}, starred = {}, maybe = {}, starredData = {}, tagCoords = {} } =
+    await browser.storage.local.get(["archived", "settings", "starred", "maybe", "starredData", "tagCoords"]);
   archivedSet = new Set(Object.keys(archived));
   starredSet = new Set(Object.keys(starred));
+  maybeSet = new Set(Object.keys(maybe));
   starredCache = starredData;
+  tagCoordsCache = tagCoords;
   showArchived = !!settings.showArchived;
 }
 refresh();
 browser.storage.onChanged.addListener(refresh);
 
-/* ---- persist starred listings' cached objects (throttled) ---- */
+/* ---- persist starred full objects + starred/maybe coords (throttled) ---- */
 let persistTimer = null, persistDirty = false;
-function persistStarredFromSeen() {
+function persistFromSeen() {
   let changed = false;
   for (const id of starredSet) {
     if (seen[id] && seen[id].coord) { starredCache[id] = JSON.parse(JSON.stringify(seen[id])); changed = true; }
   }
+  for (const id of new Set([...starredSet, ...maybeSet])) {
+    const c = seen[id] && seen[id].coord;
+    if (!c) continue;
+    const cur = tagCoordsCache[id];
+    if (!cur || cur.lat !== c.lat || cur.lng !== c.lng) { tagCoordsCache[id] = { lat: c.lat, lng: c.lng }; changed = true; }
+  }
   if (changed) {
     persistDirty = true;
-    if (!persistTimer) persistTimer = setTimeout(flushStarred, 2000);
+    if (!persistTimer) persistTimer = setTimeout(flush, 2000);
   }
 }
-function flushStarred() {
+function flush() {
   persistTimer = null;
   if (!persistDirty) return;
   persistDirty = false;
-  browser.storage.local.set({ starredData: starredCache }).catch(() => {});
+  browser.storage.local.set({ starredData: starredCache, tagCoords: tagCoordsCache }).catch(() => {});
 }
 
 function pickStarredObjs() {
@@ -52,7 +62,7 @@ function pickStarredObjs() {
 function processJson(text) {
   const root = JSON.parse(text);
   Filter.collectSeen(root, seen);
-  persistStarredFromSeen();
+  persistFromSeen();
   const removed = showArchived ? 0 : Filter.filterNode(root, archivedSet);
   const injected = Filter.injectStarred(root, pickStarredObjs());
   if (removed || injected) console.log(`[Archiver] removed ${removed}, injected ${injected}`);
@@ -85,8 +95,8 @@ function rewriteHtml(text) {
 
 browser.webRequest.onBeforeRequest.addListener(
   (details) => {
-    // Nothing to remove or inject: let the response stream through untouched.
-    if (archivedSet.size === 0 && starredSet.size === 0) return;
+    // Nothing tagged at all: let the response stream through untouched.
+    if (archivedSet.size === 0 && starredSet.size === 0 && maybeSet.size === 0) return;
 
     const isDoc = details.type === "main_frame";
     const filter = browser.webRequest.filterResponseData(details.requestId);

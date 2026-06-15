@@ -38,6 +38,10 @@ const Store = {
   async getStarredData() { return (await browser.storage.local.get("starredData")).starredData || {}; },
   async setStarredData(data) { await browser.storage.local.set({ starredData: data }); },
 
+  // id -> {lat,lng} for starred+maybe listings, so the decorator can colour the
+  // matching map pins (markers only expose a position, not the listing id).
+  async getTagCoords() { return (await browser.storage.local.get("tagCoords")).tagCoords || {}; },
+
   async getSettings() {
     const { settings = {} } = await browser.storage.local.get("settings");
     return { showArchived: false, ...settings };

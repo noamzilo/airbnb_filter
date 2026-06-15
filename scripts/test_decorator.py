@@ -28,6 +28,7 @@ window.Store = {
   getCategory: async (id) => { for (const c of CATS) if (window.__cats[c][id]) return c; return null; },
   setCategory: async (id, snap, cat) => { for (const c of CATS) delete window.__cats[c][id]; if (cat) window.__cats[cat][id] = {...(snap||{}), ts:1}; fire(); },
   getStarredData: async () => ({}), setStarredData: async () => {},
+  getTagCoords: async () => window.__tagcoords || {},
   getSettings: async () => window.__settings,
   setSetting: async (k,v) => { window.__settings[k]=v; fire(); },
 };
@@ -117,6 +118,32 @@ try:
         ActionChains(d).move_to_element(other).pause(0.3).click(other).perform()
         time.sleep(1.2)
         check("a different pill stays visible after opening", d.execute_script("return arguments[0].style.display!=='none';", other))
+
+    # Pin colouring: mark a visible marker's coord as starred -> bubble turns blue
+    pos = d.execute_script("""
+      const m=[...document.querySelectorAll('gmp-advanced-marker')].find(x=>x.style.display!=='none'&&x.getAttribute('position')&&/[$€£₲]/.test(x.textContent||''));
+      return m ? m.getAttribute('position') : null;
+    """)
+    if pos:
+        d.execute_script("""
+          const pos=arguments[0]; const [lat,lng]=pos.split(',').map(Number);
+          window.__cats = { starred:{ colorid:{coord:pos, ts:1} }, maybe:{}, archived:{} };
+          window.__tagcoords = { colorid:{lat,lng} };
+          window.__ls.forEach(f=>{try{f()}catch(e){}});
+        """, pos)
+        time.sleep(1.0)
+        blue = d.execute_script("""
+          let n=0;
+          for(const m of document.querySelectorAll('gmp-advanced-marker')){
+            if(m.style.display==='none') continue;
+            for(const el of m.querySelectorAll('div')){
+              const s=getComputedStyle(el);
+              if(parseFloat(s.borderRadius)>=14 && s.backgroundColor==='rgb(47, 128, 237)'){ n++; break; }
+            }
+          }
+          return n;
+        """)
+        check("starred marker bubble turns blue", blue >= 1, f"blue pills={blue}")
 
     print("\n" + ("ALL PASS" if all(results) else "SOME FAILED"), flush=True)
 finally:
