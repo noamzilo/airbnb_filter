@@ -256,7 +256,12 @@ function decorateCards() {
     const container = cardContainer(anchor);
     if (!container || container.dataset.archiverDone === "1") continue;
 
-    if (cats.archived[id] && !showArchived) {
+    const onMap = isOverMap(container, mapEl);
+    const cat = categoryOf(id);
+
+    // Side list is a curated view: show ONLY starred / maybe; hide the rest
+    // (unsorted "unseen" and archived). The map stays the discovery surface.
+    if (!onMap && cat !== "starred" && cat !== "maybe") {
       container.style.display = "none";
       container.dataset.archiverDone = "1";
       continue;
@@ -266,13 +271,13 @@ function decorateCards() {
     container.dataset.archiverId = id;
     if (getComputedStyle(container).position === "static") container.style.position = "relative";
 
-    if (cats.archived[id] && showArchived) {
+    // Map popup of an archived listing (only reachable with "show archived" on).
+    if (onMap && cat === "archived") {
       container.classList.add("archiver-greyed");
       container.appendChild(makeUnarchive(id));
       continue;
     }
 
-    const onMap = isOverMap(container, mapEl);
     const snap = snapshotFromCard(anchor, container, id);
     if (onMap && lastMarker) snap.coord = lastMarker.getAttribute("position");
 
@@ -283,12 +288,12 @@ function decorateCards() {
     const maybe = makeBtn("archiver-maybe", "?", "Maybe");
     const trash = makeBtn("archiver-trash", "🗑", "Archive");
 
-    const reflect = (cat) => {
-      star.classList.toggle("on", cat === "starred");
-      star.textContent = cat === "starred" ? "★" : "☆";
-      maybe.classList.toggle("on", cat === "maybe");
+    const reflect = (c) => {
+      star.classList.toggle("on", c === "starred");
+      star.textContent = c === "starred" ? "★" : "☆";
+      maybe.classList.toggle("on", c === "maybe");
     };
-    reflect(categoryOf(id));
+    reflect(cat);
 
     const toggle = (target) => async (e) => {
       e.preventDefault(); e.stopPropagation();
@@ -296,6 +301,8 @@ function decorateCards() {
       const next = cur === target ? null : target;
       await Store.setCategory(id, snap, next);
       reflect(next);
+      // On a side card, untagging removes it from the curated list immediately.
+      if (!onMap && next !== "starred" && next !== "maybe") container.style.display = "none";
     };
     star.addEventListener("click", toggle("starred"));
     maybe.addEventListener("click", toggle("maybe"));

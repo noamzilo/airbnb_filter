@@ -6,7 +6,7 @@
 let archivedSet = new Set();
 let starredSet = new Set();
 let maybeSet = new Set();
-let starredCache = {};        // persisted full objects: { id: {searchResult,mapResult,viewportPin,coord} }
+let tagCache = {};            // persisted full objects for starred+maybe (storage key "starredData")
 let tagCoordsCache = {};      // persisted { id: {lat,lng} } for starred+maybe (pin colouring)
 let showArchived = false;
 const seen = {};              // session cache: { id: {searchResult,mapResult,viewportPin,coord} }
@@ -17,7 +17,7 @@ async function refresh() {
   archivedSet = new Set(Object.keys(archived));
   starredSet = new Set(Object.keys(starred));
   maybeSet = new Set(Object.keys(maybe));
-  starredCache = starredData;
+  tagCache = starredData;
   tagCoordsCache = tagCoords;
   showArchived = !!settings.showArchived;
 }
@@ -28,14 +28,13 @@ browser.storage.onChanged.addListener(refresh);
 let persistTimer = null, persistDirty = false;
 function persistFromSeen() {
   let changed = false;
-  for (const id of starredSet) {
-    if (seen[id] && seen[id].coord) { starredCache[id] = JSON.parse(JSON.stringify(seen[id])); changed = true; }
-  }
   for (const id of new Set([...starredSet, ...maybeSet])) {
-    const c = seen[id] && seen[id].coord;
-    if (!c) continue;
+    if (!(seen[id] && seen[id].coord)) continue;
+    tagCache[id] = JSON.parse(JSON.stringify(seen[id]));
+    const c = seen[id].coord;
     const cur = tagCoordsCache[id];
-    if (!cur || cur.lat !== c.lat || cur.lng !== c.lng) { tagCoordsCache[id] = { lat: c.lat, lng: c.lng }; changed = true; }
+    if (!cur || cur.lat !== c.lat || cur.lng !== c.lng) tagCoordsCache[id] = { lat: c.lat, lng: c.lng };
+    changed = true;
   }
   if (changed) {
     persistDirty = true;
@@ -46,13 +45,13 @@ function flush() {
   persistTimer = null;
   if (!persistDirty) return;
   persistDirty = false;
-  browser.storage.local.set({ starredData: starredCache, tagCoords: tagCoordsCache }).catch(() => {});
+  browser.storage.local.set({ starredData: tagCache, tagCoords: tagCoordsCache }).catch(() => {});
 }
 
-function pickStarredObjs() {
+function pickObjs(set) {
   const out = {};
-  for (const id of starredSet) {
-    const o = seen[id] || starredCache[id];
+  for (const id of set) {
+    const o = seen[id] || tagCache[id];
     if (o && o.coord) out[id] = o;
   }
   return out;
@@ -64,9 +63,12 @@ function processJson(text) {
   Filter.collectSeen(root, seen);
   persistFromSeen();
   const removed = showArchived ? 0 : Filter.filterNode(root, archivedSet);
-  const injected = Filter.injectStarred(root, pickStarredObjs());
+  const injected = Filter.injectListings(root, pickObjs(starredSet), true);   // starred: map + list
+  const injectedMaybe = Filter.injectListings(root, pickObjs(maybeSet), false); // maybe: list only
   const fullPins = Filter.forceFullPins(root, starredSet);
-  if (removed || injected || fullPins) console.log(`[Archiver] removed ${removed}, injected ${injected}, fullPins ${fullPins}`);
+  if (removed || injected || injectedMaybe || fullPins) {
+    console.log(`[Archiver] removed ${removed}, injected ${injected}+${injectedMaybe}, fullPins ${fullPins}`);
+  }
   return JSON.stringify(root);
 }
 

@@ -61,25 +61,25 @@ try:
     d.execute_script(CONTENT)
     time.sleep(1.5)
 
-    check("side cards get action toolbars", d.execute_script("return document.querySelectorAll('.archiver-actions').length") > 0)
+    # Curated side list: nothing tagged -> side cards hidden, no side-list toolbars.
+    hidden = d.execute_script("return [...document.querySelectorAll('[data-archiver-done]')].filter(c=>getComputedStyle(c).display==='none').length")
+    sideActions = d.execute_script("return document.querySelectorAll('.archiver-actions:not(.archiver-actions--map)').length")
+    check("side list hidden when nothing tagged", hidden > 0 and sideActions == 0, f"hidden={hidden} sideActions={sideActions}")
 
-    # Star a side card
-    d.execute_script("const b=document.querySelector('.archiver-actions .archiver-star'); b&&b.click();")
-    time.sleep(0.4)
-    check("clicking star adds to Liked", d.execute_script("return Object.keys(window.__cats.starred).length") >= 1)
-
-    # Maybe on the SAME card -> moves out of starred (mutual exclusivity)
-    d.execute_script("const b=document.querySelector('.archiver-actions .archiver-maybe'); b&&b.click();")
-    time.sleep(0.4)
-    moved = d.execute_script("return Object.keys(window.__cats.starred).length===0 && Object.keys(window.__cats.maybe).length>=1")
-    check("maybe replaces star (mutually exclusive)", moved,
-          f"star={d.execute_script('return Object.keys(window.__cats.starred).length')} maybe={d.execute_script('return Object.keys(window.__cats.maybe).length')}")
-
-    # Open a map popup card and trash it
+    # Tag from the MAP: open a pin's popup card (it must carry the rubric controls).
     marker = d.execute_script("return [...document.querySelectorAll('gmp-advanced-marker')].filter(m=>/[$€£₲]/.test(m.textContent||''))[0]||null;")
     ActionChains(d).move_to_element(marker).pause(0.3).click(marker).perform()
     time.sleep(2.4)
-    check("map popup card gets a trash control", d.execute_script("return document.querySelectorAll('.archiver-actions--map').length") > 0)
+    check("map popup card gets the rubric controls", d.execute_script("return document.querySelectorAll('.archiver-actions--map .archiver-star').length") > 0)
+
+    # Star then Maybe on the popup -> mutual exclusivity
+    d.execute_script("const b=document.querySelector('.archiver-actions--map .archiver-star'); b&&b.click();")
+    time.sleep(0.4)
+    check("clicking star adds to Liked", d.execute_script("return Object.keys(window.__cats.starred).length") >= 1)
+    d.execute_script("const b=document.querySelector('.archiver-actions--map .archiver-maybe'); b&&b.click();")
+    time.sleep(0.4)
+    check("maybe replaces star (mutually exclusive)",
+          d.execute_script("return Object.keys(window.__cats.starred).length===0 && Object.keys(window.__cats.maybe).length>=1"))
 
     clicked = d.execute_script("""
       const t = document.querySelector('.archiver-actions--map .archiver-trash');

@@ -68,6 +68,22 @@ const idsIn = (a) => new Set((a || []).map(Filter.itemId).filter(Boolean));
   check("present listing not duplicated", injected === 0 && after === before);
 }
 
+// 3b) Maybe injection goes into the LIST only (not the map).
+{
+  const state = load();
+  const arr0 = Filter.locateArrays(state);
+  const id = Filter.itemId(arr0.mapSearchResults[1]);
+  const seen = {};
+  Filter.collectSeen(state, seen);
+  Filter.filterNode(state, new Set([id])); // drop it everywhere
+  const injected = Filter.injectListings(state, { [id]: seen[id] }, false);
+  const back = Filter.locateArrays(state);
+  check("maybe injected into list only", injected >= 1
+    && idsIn(back.searchResults).has(id)
+    && !idsIn(back.mapSearchResults).has(id)
+    && !idsIn(back.staysInViewport).has(id));
+}
+
 // 4) Starred pins are forced to FULL_PIN (Airbnb shrinks some to MINI_PIN).
 {
   const state = load();

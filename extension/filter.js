@@ -128,12 +128,13 @@ const Filter = {
     return n >= 2 ? { minLat, maxLat, minLng, maxLng } : null;
   },
 
-  // Re-inject starred listings the response omitted but that fall in view.
-  // starredObjById: { id: { searchResult?, mapResult?, viewportPin?, coord } }
-  injectStarred(root, starredObjById) {
+  // Re-inject tagged listings the response omitted but that fall in view.
+  // objById: { id: { searchResult?, mapResult?, viewportPin?, coord } }
+  // includeMap=true -> also add the map card + pin (starred); false -> list only (maybe).
+  injectListings(root, objById, includeMap) {
     let injected = 0;
     try {
-      const ids = Object.keys(starredObjById || {});
+      const ids = Object.keys(objById || {});
       if (!ids.length) return 0;
       const arr = Filter.locateArrays(root);
       const bbox = Filter.bboxOf(arr.mapSearchResults || arr.searchResults || []);
@@ -145,20 +146,25 @@ const Filter = {
       const clone = (o) => JSON.parse(JSON.stringify(o));
 
       for (const id of ids) {
-        const cached = starredObjById[id];
+        const cached = objById[id];
         const c = cached && cached.coord;
         if (!c) continue;
         if (c.lat < bbox.minLat - padLat || c.lat > bbox.maxLat + padLat
           || c.lng < bbox.minLng - padLng || c.lng > bbox.maxLng + padLng) continue;
         let did = false;
-        if (arr.mapSearchResults && cached.mapResult && !inMap.has(id)) { arr.mapSearchResults.push(clone(cached.mapResult)); did = true; }
-        if (arr.staysInViewport && cached.viewportPin && !inVp.has(id)) { arr.staysInViewport.push(clone(cached.viewportPin)); did = true; }
         if (arr.searchResults && cached.searchResult && !inList.has(id)) { arr.searchResults.push(clone(cached.searchResult)); did = true; }
+        if (includeMap) {
+          if (arr.mapSearchResults && cached.mapResult && !inMap.has(id)) { arr.mapSearchResults.push(clone(cached.mapResult)); did = true; }
+          if (arr.staysInViewport && cached.viewportPin && !inVp.has(id)) { arr.staysInViewport.push(clone(cached.viewportPin)); did = true; }
+        }
         if (did) injected++;
       }
     } catch (_) { /* never let injection break the response */ }
     return injected;
   },
+
+  // Back-compat alias: starred listings inject into map + list.
+  injectStarred(root, objById) { return Filter.injectListings(root, objById, true); },
 
   // Force starred listings' map pins to the full-size price pill (Airbnb shrinks
   // some to MINI_PIN dots). Returns how many were upgraded.
