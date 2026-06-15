@@ -159,6 +159,19 @@ const Filter = {
     } catch (_) { /* never let injection break the response */ }
     return injected;
   },
+
+  // Force starred listings' map pins to the full-size price pill (Airbnb shrinks
+  // some to MINI_PIN dots). Returns how many were upgraded.
+  forceFullPins(root, starredIds) {
+    if (!starredIds || !starredIds.size) return 0;
+    let n = 0;
+    const arr = Filter.locateArrays(root);
+    for (const it of arr.staysInViewport || []) {
+      const id = Filter.itemId(it);
+      if (id && starredIds.has(id) && it.pinState !== "FULL_PIN") { it.pinState = "FULL_PIN"; n++; }
+    }
+    return n;
+  },
 };
 
 // Export for Node tests; harmless in the browser.

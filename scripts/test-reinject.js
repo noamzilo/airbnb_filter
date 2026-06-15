@@ -68,5 +68,18 @@ const idsIn = (a) => new Set((a || []).map(Filter.itemId).filter(Boolean));
   check("present listing not duplicated", injected === 0 && after === before);
 }
 
+// 4) Starred pins are forced to FULL_PIN (Airbnb shrinks some to MINI_PIN).
+{
+  const state = load();
+  const arr = Filter.locateArrays(state);
+  const mini = (arr.staysInViewport || []).find((x) => x.pinState === "MINI_PIN");
+  check("found a MINI_PIN to upgrade", !!mini);
+  if (mini) {
+    const id = Filter.itemId(mini);
+    const upgraded = Filter.forceFullPins(state, new Set([id]));
+    check("forceFullPins upgrades the starred pin", upgraded === 1 && mini.pinState === "FULL_PIN");
+  }
+}
+
 console.log(ok ? "\nALL PASS" : "\nSOME FAILED");
 process.exit(ok ? 0 : 1);

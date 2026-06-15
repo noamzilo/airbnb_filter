@@ -65,7 +65,8 @@ function processJson(text) {
   persistFromSeen();
   const removed = showArchived ? 0 : Filter.filterNode(root, archivedSet);
   const injected = Filter.injectStarred(root, pickStarredObjs());
-  if (removed || injected) console.log(`[Archiver] removed ${removed}, injected ${injected}`);
+  const fullPins = Filter.forceFullPins(root, starredSet);
+  if (removed || injected || fullPins) console.log(`[Archiver] removed ${removed}, injected ${injected}, fullPins ${fullPins}`);
   return JSON.stringify(root);
 }
 
