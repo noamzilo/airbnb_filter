@@ -42,6 +42,17 @@ const Store = {
   // matching map pins (markers only expose a position, not the listing id).
   async getTagCoords() { return (await browser.storage.local.get("tagCoords")).tagCoords || {}; },
 
+  // Per-listing comments and the panel's custom order — independent of category
+  // so they survive star <-> maybe <-> archive and re-tagging.
+  async getNotes() { return (await browser.storage.local.get("notes")).notes || {}; },
+  async setNote(id, text) {
+    const notes = await Store.getNotes();
+    if (text && text.trim()) notes[id] = text; else delete notes[id];
+    await browser.storage.local.set({ notes });
+  },
+  async getOrder() { return (await browser.storage.local.get("order")).order || []; },
+  async setOrder(arr) { await browser.storage.local.set({ order: arr }); },
+
   async getSettings() {
     const { settings = {} } = await browser.storage.local.get("settings");
     return { showArchived: false, ...settings };

@@ -24,28 +24,34 @@ async function refresh() {
 refresh();
 browser.storage.onChanged.addListener(refresh);
 
-/* ---- persist starred full objects + starred/maybe coords (throttled) ---- */
-let persistTimer = null, persistDirty = false;
+/* ---- persist coords promptly (for pin colouring) + starred objects (slower) ---- */
+let coordTimer = null, dataTimer = null, coordDirty = false, dataDirty = false;
 function persistFromSeen() {
-  let changed = false;
+  // coords for starred + maybe (drive pin colouring) — write promptly
   for (const id of new Set([...starredSet, ...maybeSet])) {
-    if (!(seen[id] && seen[id].coord)) continue;
-    tagCache[id] = JSON.parse(JSON.stringify(seen[id]));
-    const c = seen[id].coord;
+    const c = seen[id] && seen[id].coord;
+    if (!c) continue;
     const cur = tagCoordsCache[id];
-    if (!cur || cur.lat !== c.lat || cur.lng !== c.lng) tagCoordsCache[id] = { lat: c.lat, lng: c.lng };
-    changed = true;
+    if (!cur || cur.lat !== c.lat || cur.lng !== c.lng) { tagCoordsCache[id] = { lat: c.lat, lng: c.lng }; coordDirty = true; }
   }
-  if (changed) {
-    persistDirty = true;
-    if (!persistTimer) persistTimer = setTimeout(flush, 2000);
+  // full objects for starred (drive map re-injection) — heavier, slower
+  for (const id of starredSet) {
+    if (seen[id] && seen[id].coord) { tagCache[id] = JSON.parse(JSON.stringify(seen[id])); dataDirty = true; }
   }
+  if (coordDirty && !coordTimer) coordTimer = setTimeout(flushCoords, 300);
+  if (dataDirty && !dataTimer) dataTimer = setTimeout(flushData, 2000);
 }
-function flush() {
-  persistTimer = null;
-  if (!persistDirty) return;
-  persistDirty = false;
-  browser.storage.local.set({ starredData: tagCache, tagCoords: tagCoordsCache }).catch(() => {});
+function flushCoords() {
+  coordTimer = null;
+  if (!coordDirty) return;
+  coordDirty = false;
+  browser.storage.local.set({ tagCoords: tagCoordsCache }).catch(() => {});
+}
+function flushData() {
+  dataTimer = null;
+  if (!dataDirty) return;
+  dataDirty = false;
+  browser.storage.local.set({ starredData: tagCache }).catch(() => {});
 }
 
 function pickObjs(set) {
@@ -63,11 +69,10 @@ function processJson(text) {
   Filter.collectSeen(root, seen);
   persistFromSeen();
   const removed = showArchived ? 0 : Filter.filterNode(root, archivedSet);
-  const injected = Filter.injectListings(root, pickObjs(starredSet), true);   // starred: map + list
-  const injectedMaybe = Filter.injectListings(root, pickObjs(maybeSet), false); // maybe: list only
+  const injected = Filter.injectStarredMap(root, pickObjs(starredSet)); // starred: map pins only
   const fullPins = Filter.forceFullPins(root, starredSet);
-  if (removed || injected || injectedMaybe || fullPins) {
-    console.log(`[Archiver] removed ${removed}, injected ${injected}+${injectedMaybe}, fullPins ${fullPins}`);
+  if (removed || injected || fullPins) {
+    console.log(`[Archiver] removed ${removed}, injected ${injected}, fullPins ${fullPins}`);
   }
   return JSON.stringify(root);
 }

@@ -33,12 +33,12 @@ const idsIn = (a) => new Set((a || []).map(Filter.itemId).filter(Boolean));
   check("victim removed before injection",
     !idsIn(after.searchResults).has(victim) && !idsIn(after.mapSearchResults).has(victim) && !idsIn(after.staysInViewport).has(victim));
 
-  const injected = Filter.injectStarred(state, { [victim]: seen[victim] });
+  const injected = Filter.injectStarredMap(state, { [victim]: seen[victim] });
   const back = Filter.locateArrays(state);
   check(`injected the starred listing (count=${injected})`, injected >= 1);
-  check("back in searchResults", idsIn(back.searchResults).has(victim));
   check("back in mapSearchResults", idsIn(back.mapSearchResults).has(victim));
   check("back in staysInViewport", idsIn(back.staysInViewport).has(victim));
+  check("NOT injected into searchResults (panel owns the list)", !idsIn(back.searchResults).has(victim));
 }
 
 // 2) Not injected when the coordinate is outside the returned bounds.
@@ -51,7 +51,7 @@ const idsIn = (a) => new Set((a || []).map(Filter.itemId).filter(Boolean));
   far.coord = { lat: 80, lng: 80 }; // nowhere near Asunción
   // remove it so "already present" isn't the reason it's skipped
   Filter.filterNode(state, new Set([id]));
-  const injected = Filter.injectStarred(state, { [id]: far });
+  const injected = Filter.injectStarredMap(state, { [id]: far });
   check("not injected when out of view bounds", injected === 0);
 }
 
@@ -63,25 +63,9 @@ const idsIn = (a) => new Set((a || []).map(Filter.itemId).filter(Boolean));
   const seen = {};
   Filter.collectSeen(state, seen);
   const before = arr.mapSearchResults.length;
-  const injected = Filter.injectStarred(state, { [present]: seen[present] });
+  const injected = Filter.injectStarredMap(state, { [present]: seen[present] });
   const after = Filter.locateArrays(state).mapSearchResults.length;
   check("present listing not duplicated", injected === 0 && after === before);
-}
-
-// 3b) Maybe injection goes into the LIST only (not the map).
-{
-  const state = load();
-  const arr0 = Filter.locateArrays(state);
-  const id = Filter.itemId(arr0.mapSearchResults[1]);
-  const seen = {};
-  Filter.collectSeen(state, seen);
-  Filter.filterNode(state, new Set([id])); // drop it everywhere
-  const injected = Filter.injectListings(state, { [id]: seen[id] }, false);
-  const back = Filter.locateArrays(state);
-  check("maybe injected into list only", injected >= 1
-    && idsIn(back.searchResults).has(id)
-    && !idsIn(back.mapSearchResults).has(id)
-    && !idsIn(back.staysInViewport).has(id));
 }
 
 // 4) Starred pins are forced to FULL_PIN (Airbnb shrinks some to MINI_PIN).
