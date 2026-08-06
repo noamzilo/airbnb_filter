@@ -54,13 +54,19 @@ Run all commands from the project root (`c:\Users\noams\src\airbnb_filter`).
    or isn't AMO-signed.
 
    A running Firefox keeps the old copy open, so the new version only goes live on
-   a restart — `--restart` does that **without losing tabs**: it closes Firefox
-   gracefully (`taskkill` on the parent PID, never `/F`, so Firefox writes its
+   a restart — `--restart` does that **without losing tabs**: it posts `WM_CLOSE`
+   to **every** top-level Firefox window (never `/F`, so Firefox writes its
    session), waits for exit, arms
    `browser.sessionstore.resume_session_once` — the one-shot pref Firefox itself
    uses when it restarts for an update — and reopens. Windows, tabs, scroll and
    form state all come back. Verified end-to-end on a throwaway profile: 3 tabs in,
-   3 tabs out, add-on 0.1.6 → 0.1.7 in the same cycle.
+   3 tabs out, add-on 0.1.6 → 0.1.7 in the same cycle; and with 2 windows open,
+   both close and the browser really exits (`scripts/test_restart.py`).
+
+   It must be every window, not `taskkill /PID`: that reaches only the process's
+   *main* window, so on a multi-window Firefox it destroys one window and leaves
+   the browser running — the update never applies and a window just disappears.
+   That regression is what `test_restart.py` pins.
 
    It only ever closes Firefox parent processes, and if `--profile` was passed it
    closes only the instance running that profile. If Firefox has no window

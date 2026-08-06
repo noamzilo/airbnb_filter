@@ -226,9 +226,11 @@ console.log(`  profile: ${profileDir}`);
 function firefoxExe() {
 	const fromProc = procs.find((p) => p.exe && fs.existsSync(p.exe))?.exe;
 	if (fromProc) return fromProc;
+	// Forward slashes: in a JS string "\P"/"\M" silently drop the backslash and
+	// "\f" is a formfeed, so the backslashed form never matched anything.
 	for (const p of [
-		"C:\Program Files\Mozilla Firefox\firefox.exe",
-		"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+		"C:/Program Files/Mozilla Firefox/firefox.exe",
+		"C:/Program Files (x86)/Mozilla Firefox/firefox.exe",
 	]) {
 		if (fs.existsSync(p)) return p;
 	}
@@ -237,6 +239,56 @@ function firefoxExe() {
 
 const sleep = (ms) =>
 	spawnSync("powershell", ["-NoProfile", "-Command", `Start-Sleep -Milliseconds ${ms}`]);
+
+// Every top-level window belonging to these pids. `taskkill /PID` (and
+// Get-Process MainWindowHandle) only ever reach ONE window per process, so on a
+// Firefox with several windows open it closes a single window and the browser
+// stays up -- which looks exactly like "it ate my window and never restarted".
+const WINDOW_PS = `
+param([int[]]$Pids)
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class ArchiverWin {
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+}
+"@
+$set = @{}; foreach ($p in $Pids) { $set[[uint32]$p] = $true }
+$found = New-Object System.Collections.ArrayList
+$cb = [ArchiverWin+EnumProc]{
+  param($h, $l)
+  $pid2 = [uint32]0
+  [void][ArchiverWin]::GetWindowThreadProcessId($h, [ref]$pid2)
+  # visible, and an owner-less top-level window (GW_OWNER = 4) -- i.e. a real
+  # browser window, not a tooltip or a modal's shadow.
+  if ($set.ContainsKey($pid2) -and [ArchiverWin]::IsWindowVisible($h) -and
+      [ArchiverWin]::GetWindow($h, 4) -eq [IntPtr]::Zero) { [void]$found.Add($h) }
+  return $true
+}
+[void][ArchiverWin]::EnumWindows($cb, [IntPtr]::Zero)
+if ($env:ARCHIVER_CLOSE -eq '1') {
+  foreach ($h in $found) { [void][ArchiverWin]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) }
+}
+$found.Count
+`;
+function windowScript(pids, close) {
+	const f = path.join(os.tmpdir(), `archiver-win-${process.pid}.ps1`);
+	fs.writeFileSync(f, WINDOW_PS);
+	const r = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", f, "-Pids", pids.join(",")], {
+		encoding: "utf8",
+		env: { ...process.env, ARCHIVER_CLOSE: close ? "1" : "0" },
+	});
+	rm(f);
+	const n = parseInt((r.stdout || "").trim().split(/\s+/).pop(), 10);
+	return Number.isFinite(n) ? n : 0;
+}
+const countWindows = (pids) => windowScript(pids, false);
+const closeAllWindows = (pids) => windowScript(pids, true);
 
 function waitForExit(pids, ms) {
 	const deadline = Date.now() + ms;
@@ -301,11 +353,22 @@ if (!procs.length) {
 		console.log(`${version} activates the next time it starts.`);
 		process.exit(0);
 	}
-	console.log(`\nclosing Firefox (pid ${pids.join(", ")}) -- graceful, no /F...`);
-	for (const pid of pids) spawnSync("taskkill", ["/PID", String(pid)]);
+	const nWindows = countWindows(pids);
+	console.log(`\nclosing Firefox (pid ${pids.join(", ")}, ${nWindows} window(s)) -- graceful, no /F...`);
+	// WM_CLOSE to EVERY top-level window == clicking X on each one, so Firefox
+	// shuts down cleanly and writes its session. Closing only the main window
+	// (what taskkill does) just destroys one window and leaves the browser up.
+	const closed = closeAllWindows(pids);
+	if (!closed) {
+		console.log("no closable windows found -- left alone; " + version + " loads on your next start.");
+		process.exit(0);
+	}
 	if (!waitForExit(pids, 45000)) {
-		console.log("Firefox did not exit within 45s -- a dialog may be blocking shutdown.");
-		console.log("Nothing was forced; close it yourself and the new version loads on start.");
+		console.log(`Firefox did not exit within 45s -- a dialog is probably blocking shutdown`);
+		console.log(`(an "unsaved changes"/"leave site?" prompt on some tab).`);
+		console.log(`Nothing was forced. ${closed} window(s) were asked to close -- press`);
+		console.log(`Ctrl+Shift+N in Firefox to reopen any that did close, then restart it`);
+		console.log(`yourself to activate ${version}.`);
 		process.exit(0);
 	}
 	console.log(`session restore: ${armSessionRestore()}`);
