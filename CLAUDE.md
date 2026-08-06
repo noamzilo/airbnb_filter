@@ -7,8 +7,9 @@ the DOM as **text** (screenshots are too token-expensive). Read
 - **`python scripts/test_decorator.py`** — main regression test: loads live
   Airbnb, injects `extension/content.js` with a stubbed store, asserts
   panel / colouring / map-tagging behavior. Run after any `content.js` change.
-- **`node scripts/test-filter.js` / `test-reinject.js` / `test-html-rewrite.js`**
-  — fast pure-logic tests for the interceptor (`filter.js`), no browser.
+- **`node scripts/test-filter.js` / `test-reinject.js` / `test-html-rewrite.js` /
+  `test-price.js`** — fast pure-logic tests for `filter.js` (no browser):
+  archiving, re-injection, HTML blob rewriting, price normalisation.
 - **`scripts/drive.py` / `recon_map.py`** — ad-hoc live DOM recon (dump markup,
   click pins, print JSON) when you need to see real structure.
 
@@ -28,6 +29,10 @@ Gotchas:
   `npm run sign` / the `/update-extension` skill. Unlisted uploads to AMO only to
   get signed; it is **NOT** publicly listed or searchable. This is the normal,
   fine way to produce an installable `.xpi`.
+- After signing, install it with **`npm run install:local -- --restart`**: copies
+  the signed `.xpi` into the real profile and restarts Firefox **without losing
+  tabs** (graceful close + `browser.sessionstore.resume_session_once`). Never make
+  the user click through `about:addons`, and never ask them to restart — see D37.
 - **Never** publish to the public/listed channel (`npm run sign:listed` /
   `--channel=listed`) or otherwise make the add-on publicly searchable unless the
   user explicitly asks for public publishing.

@@ -1,0 +1,164 @@
+// Pure-logic test for Filter.parseMoney / Filter.priceOf (no browser).
+//   node scripts/test-price.js
+// Uses the real recon blob (state.json) plus synthetic price shapes.
+
+const fs = require("fs");
+const path = require("path");
+const { Filter } = require(path.join(__dirname, "..", "extension", "filter.js"));
+
+let fails = 0;
+function check(label, cond, extra = "") {
+  if (!cond) fails++;
+  console.log((cond ? "PASS" : "FAIL") + "  " + label + (extra ? "  " + extra : ""));
+}
+const eq = (a, b) => Math.abs(a - b) < 0.01;
+
+/* ---- money parsing ---- */
+check("plain", Filter.parseMoney("$564 USD") === 564);
+check("thousands comma", Filter.parseMoney("$1,418") === 1418);
+check("comma + decimal", eq(Filter.parseMoney("$1,234.56 USD"), 1234.56));
+check("decimal only", eq(Filter.parseMoney("$563.58 USD"), 563.58));
+check("dotted thousands", Filter.parseMoney("₲1.234.567") === 1234567);
+check("single dotted thousand", Filter.parseMoney("₲850.000") === 850000);
+check("comma decimal", eq(Filter.parseMoney("€1.234,50"), 1234.5));
+check("no digits", Filter.parseMoney("free") === null);
+check("symbol", Filter.currencyOf("$564 USD") === "$", Filter.currencyOf("$564 USD"));
+check("symbol guarani", Filter.currencyOf("₲1.234") === "₲");
+
+/* ---- price shapes ---- */
+const stayTotal = {
+  structuredDisplayPrice: {
+    primaryLine: { accessibilityLabel: "$564 USD for 14 nights", price: "$564 USD", qualifier: "for 14 nights" },
+    explanationData: {
+      priceDetails: [
+        { items: [{ __typename: "DefaultExplanationLineItem", description: "14 nights x $42.29 USD", priceString: "$592.00 USD" }] },
+        { items: [{ __typename: "HighlightExplanationLineItem", description: "Price after discount", priceString: "$563.58 USD" }] },
+      ],
+    },
+  },
+};
+let p = Filter.priceOf(stayTotal);
+check("stay total -> nights", p.nights === 14, JSON.stringify(p));
+check("stay total -> uses discounted total", eq(p.total, 563.58));
+check("stay total -> nightly", eq(p.nightly, 40.26), String(p.nightly));
+check("stay total -> 30 nights", p.monthly === 1208, String(p.monthly));
+
+// Monthly-stay search: no `price` field at all, a `qualifier` of "monthly", and
+// the pre-discount figure sitting right next to it. Captured verbatim from a
+// live Jerusalem monthly search (scripts/recon_price.js).
+const monthly = {
+  structuredDisplayPrice: {
+    primaryLine: {
+      __typename: "DiscountedDisplayPriceLine",
+      accessibilityLabel: "$4,883 monthly, originally $6,675",
+      concatQualifierLeft: false,
+      discountedPrice: "$4,883",
+      originalPrice: "$6,675",
+      qualifier: "monthly",
+      trailing: null,
+    },
+    secondaryLine: null,
+    displayPriceStyle: "MONTHLY",
+    explanationData: {
+      priceDetails: [
+        { items: [
+          { __typename: "DefaultExplanationLineItem", description: "Average monthly price", priceString: "$6,674.73" },
+          { __typename: "DiscountedExplanationLineItem", description: "Monthly stay discount", priceString: "-$1,636.27" },
+        ] },
+        { items: [{ __typename: "HighlightExplanationLineItem", description: "Price after discount", priceString: "$4,882.27" }] },
+      ],
+    },
+  },
+};
+p = Filter.priceOf(monthly);
+check("monthly search normalises at all", p !== null && p.monthly !== null, JSON.stringify(p));
+check("monthly uses the discounted price, not the original", p.monthly === 4883, String(p.monthly));
+check("monthly keeps the original for context", p.original === 6675, String(p.original));
+check("monthly derives a nightly rate", eq(p.nightly, 162.77), String(p.nightly));
+check("monthly tagged as such", p.basis === "monthly", String(p.basis));
+
+// Same shape, but a nightly search that happens to be discounted.
+const discountedNightly = {
+  structuredDisplayPrice: {
+    primaryLine: {
+      __typename: "DiscountedDisplayPriceLine",
+      accessibilityLabel: "$90 per night, originally $120",
+      discountedPrice: "$90", originalPrice: "$120", qualifier: "night",
+    },
+  },
+};
+p = Filter.priceOf(discountedNightly);
+check("discounted nightly uses the discounted price", p.monthly === 2700, JSON.stringify(p));
+
+const perNight = {
+  structuredDisplayPrice: {
+    primaryLine: { accessibilityLabel: "$120 per night", price: "$120", qualifier: "night" },
+    explanationData: null,
+  },
+};
+p = Filter.priceOf(perNight);
+check("nightly -> 30 nights", p.monthly === 3600, JSON.stringify(p));
+
+check("no price line", Filter.priceOf({}) === null);
+check("garbage price", Filter.priceOf({ structuredDisplayPrice: { primaryLine: { price: "—" } } }) === null);
+
+/* ---- probe plumbing ---- */
+const MONTHLY_SEARCH = "?adults=1&refinement_paths%5B%5D=%2Fhomes&flexible_trip_lengths%5B%5D=one_month"
+  + "&monthly_start_date=2026-09-01&monthly_length=3&monthly_end_date=2026-12-01"
+  + "&price_filter_input_type=2&ne_lat=31.85&ne_lng=35.30&sw_lat=31.72&sw_lng=35.15"
+  + "&zoom=12&search_by_map=true&query=Jerusalem&amenities%5B%5D=4&min_bedrooms=2";
+
+const ctx = Filter.ctxOf("https://www.airbnb.com/s/Jerusalem--Israel/homes" + MONTHLY_SEARCH);
+check("ctx captures the monthly-stay params", ctx.includes("monthly_start_date=2026-09-01") && ctx.includes("flexible_trip_lengths[]=one_month"), ctx);
+check("ctx ignores map position", !ctx.includes("ne_lat") && !ctx.includes("zoom"), ctx);
+check("panning doesn't change ctx",
+  Filter.ctxOf("https://www.airbnb.com/s/x/homes" + MONTHLY_SEARCH.replace("ne_lat=31.85", "ne_lat=31.99")) === ctx);
+check("changing dates does change ctx",
+  Filter.ctxOf("https://www.airbnb.com/s/x/homes" + MONTHLY_SEARCH.replace("2026-09-01", "2026-10-01")) !== ctx);
+check("ctx of a junk url is empty", Filter.ctxOf("not a url") === "");
+
+const probe = Filter.probeUrl("https://www.airbnb.com", MONTHLY_SEARCH, { lat: 31.7813, lng: 35.2104 });
+const pq = new URL(probe).searchParams;
+check("probe keeps monthly mode", pq.get("monthly_start_date") === "2026-09-01" && pq.get("flexible_trip_lengths[]") === "one_month", probe);
+check("probe keeps occupancy", pq.get("adults") === "1");
+check("probe boxes the coordinate", Math.abs(+pq.get("ne_lat") - 31.7828) < 1e-6 && Math.abs(+pq.get("sw_lng") - 35.2089) < 1e-6, probe);
+check("probe overrides the map view", pq.get("search_by_map") === "true" && pq.get("zoom") === "17");
+// Filters must NOT be copied: a filtered-out listing would look "unavailable".
+check("probe drops the user's filters", !pq.has("amenities[]") && !pq.has("min_bedrooms") && !pq.has("query"), probe);
+check("probe is self-identifying", pq.get("archiver_probe") === "1");
+
+check("coordFromHtml reads a room page",
+  JSON.stringify(Filter.coordFromHtml('junk{"latitude":31.78485,"longitude":35.20905,"x":1}')) === '{"lat":31.78485,"lng":35.20905}',
+  JSON.stringify(Filter.coordFromHtml('{"latitude":31.78485,"longitude":35.20905}')));
+check("coordFromHtml on a page without coords", Filter.coordFromHtml("<html>nothing</html>") === null);
+
+/* ---- against the real recon blob ---- */
+const statePath = path.join(__dirname, "..", "state.json");
+if (fs.existsSync(statePath)) {
+  const root = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const arrays = Filter.locateArrays(root);
+  const items = arrays.searchResults || [];
+  const priced = items.map((it) => Filter.priceOf(it)).filter((x) => x && x.monthly != null);
+  check("real data: every card normalises", priced.length === items.length, `${priced.length}/${items.length}`);
+  check("real data: sane monthly range", priced.every((x) => x.monthly > 0 && x.monthly < 1e9));
+  const imgs = items.map((it) => Filter.imagesOf(it));
+  check("real data: multiple photos per card", imgs.every((a) => a.length >= 2), `min=${Math.min(...imgs.map((a) => a.length))}`);
+  check("real data: photos resized", imgs[0][0].includes("im_w="), imgs[0][0]);
+
+  // harvest() drives both the page seed and the probe response parse.
+  const h = Filter.harvest(root);
+  const ids = Object.keys(h);
+  check("harvest finds every listing", ids.length >= 18, String(ids.length));
+  check("harvest returns price+images+coord per listing",
+    ids.every((id) => h[id].price && h[id].images && h[id].images.length && h[id].coord),
+    JSON.stringify(h[ids[0]] && { price: !!h[ids[0]].price, imgs: h[ids[0]].images.length, coord: h[ids[0]].coord }));
+  const fake = `<script id="data-deferred-state-0">${JSON.stringify(root)}</script>`;
+  check("harvestHtml pulls the blob out of a page", Object.keys(Filter.harvestHtml(fake)).length === ids.length);
+  check("harvestHtml on a priceless page", Object.keys(Filter.harvestHtml("<html></html>")).length === 0);
+  console.log("  sample:", JSON.stringify(priced[0]));
+} else {
+  console.log("SKIP  state.json missing (run recon to regenerate)");
+}
+
+console.log(fails ? `\n${fails} FAILED` : "\nALL PASS");
+process.exit(fails ? 1 : 0);

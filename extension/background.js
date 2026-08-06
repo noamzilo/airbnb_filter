@@ -9,19 +9,33 @@ let maybeSet = new Set();
 let tagCache = {};            // persisted full objects for starred+maybe (storage key "starredData")
 let tagCoordsCache = {};      // persisted { id: {lat,lng} } for starred+maybe (pin colouring)
 let imagesCache = {};         // persisted { id: [url,...] } for the panel carousel
+let pricesCache = {};         // persisted { id: {monthly,nightly,total,nights,symbol} }
 let showArchived = false;
+let lastCtx = "";             // price context (dates/guests) of the last search seen
 const seen = {};              // session cache: { id: {searchResult,mapResult,viewportPin,coord} }
 
+let refreshing = false;
 async function refresh() {
-  const { archived = {}, settings = {}, starred = {}, maybe = {}, starredData = {}, tagCoords = {}, images = {} } =
-    await browser.storage.local.get(["archived", "settings", "starred", "maybe", "starredData", "tagCoords", "images"]);
-  archivedSet = new Set(Object.keys(archived));
-  starredSet = new Set(Object.keys(starred));
-  maybeSet = new Set(Object.keys(maybe));
-  tagCache = starredData;
-  tagCoordsCache = tagCoords;
-  imagesCache = images;
-  showArchived = !!settings.showArchived;
+  if (refreshing) return;     // our own persist writes re-enter onChanged
+  refreshing = true;
+  try {
+    const { archived = {}, settings = {}, starred = {}, maybe = {}, starredData = {}, tagCoords = {}, images = {}, prices = {} } =
+      await browser.storage.local.get(["archived", "settings", "starred", "maybe", "starredData", "tagCoords", "images", "prices"]);
+    archivedSet = new Set(Object.keys(archived));
+    starredSet = new Set(Object.keys(starred));
+    maybeSet = new Set(Object.keys(maybe));
+    tagCache = starredData;
+    tagCoordsCache = tagCoords;
+    imagesCache = images;
+    pricesCache = prices;
+    showArchived = !!settings.showArchived;
+  } finally {
+    refreshing = false;
+  }
+  // A listing tagged just now is usually already in `seen` from the response that
+  // rendered it — harvest its photos/price immediately instead of waiting for the
+  // next search (otherwise the panel shows a lone thumbnail and no price).
+  persistFromSeen();
 }
 refresh();
 browser.storage.onChanged.addListener(refresh);
@@ -29,14 +43,27 @@ browser.storage.onChanged.addListener(refresh);
 /* ---- persist coords promptly (for pin colouring) + starred objects (slower) ---- */
 let coordTimer = null, dataTimer = null, coordDirty = false, dataDirty = false;
 function persistFromSeen() {
-  // coords + images for starred + maybe (drive pin colouring + panel) — prompt
+  // coords + photos + normalised price for starred + maybe (drive pin colouring
+  // and the panel rows) — prompt
   for (const id of new Set([...starredSet, ...maybeSet])) {
     const s = seen[id];
-    if (!s || !s.coord) continue;
-    const cur = tagCoordsCache[id];
-    if (!cur || cur.lat !== s.coord.lat || cur.lng !== s.coord.lng) { tagCoordsCache[id] = { lat: s.coord.lat, lng: s.coord.lng }; coordDirty = true; }
-    const imgs = Filter.imagesOf(s.mapResult || s.searchResult);
+    if (!s) continue;
+    if (s.coord) {
+      const cur = tagCoordsCache[id];
+      if (!cur || cur.lat !== s.coord.lat || cur.lng !== s.coord.lng) { tagCoordsCache[id] = { lat: s.coord.lat, lng: s.coord.lng }; coordDirty = true; }
+    }
+    const item = s.searchResult || s.mapResult;
+    const imgs = Filter.imagesOf(item);
     if (imgs.length && JSON.stringify(imagesCache[id]) !== JSON.stringify(imgs)) { imagesCache[id] = imgs; coordDirty = true; }
+    // Stamp with the price context so the content script knows whether a stored
+    // price still applies to the current dates/guests or needs a live probe.
+    const p = Filter.priceOf(item);
+    if (p) {
+      const cur = pricesCache[id];
+      const same = cur && cur.ctx === lastCtx && !cur.unavailable
+        && cur.monthly === p.monthly && cur.nightly === p.nightly;
+      if (!same) { pricesCache[id] = { ...p, ctx: lastCtx, probedAt: Date.now() }; coordDirty = true; }
+    }
   }
   // full objects for starred (drive map re-injection) — heavier, slower
   for (const id of starredSet) {
@@ -49,7 +76,7 @@ function flushCoords() {
   coordTimer = null;
   if (!coordDirty) return;
   coordDirty = false;
-  browser.storage.local.set({ tagCoords: tagCoordsCache, images: imagesCache }).catch(() => {});
+  browser.storage.local.set({ tagCoords: tagCoordsCache, images: imagesCache, prices: pricesCache }).catch(() => {});
 }
 function flushData() {
   dataTimer = null;
@@ -108,9 +135,15 @@ function rewriteHtml(text) {
 
 browser.webRequest.onBeforeRequest.addListener(
   (details) => {
-    // Nothing tagged at all: let the response stream through untouched.
-    if (archivedSet.size === 0 && starredSet.size === 0 && maybeSet.size === 0) return;
+    // Our own price probes are parsed by the content script — don't buffer and
+    // rewrite them here too.
+    if (details.url.indexOf("archiver_probe=1") !== -1) return;
 
+    // The page URL carries the dates/guests; an XHR's own URL doesn't.
+    lastCtx = Filter.ctxOf(details.documentUrl || details.url);
+
+    // NB: we process even when nothing is tagged yet, so `seen` is warm and the
+    // very first star/maybe still gets photos + a price for the panel.
     const isDoc = details.type === "main_frame";
     const filter = browser.webRequest.filterResponseData(details.requestId);
     const chunks = [];

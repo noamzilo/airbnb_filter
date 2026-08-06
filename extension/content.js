@@ -11,7 +11,9 @@ let tagCoords = {};
 let notes = {};
 let order = [];
 let images = {};
+let prices = {};
 let showArchived = false;
+let showAllPlaces = false;   // bypass the "only what's on the map" filter
 
 const CURRENCY = /[$€£₲¥₩₪₫฿]/;
 const UNDO_MS = 1500;
@@ -22,14 +24,19 @@ async function loadState() {
   notes = await Store.getNotes();
   order = await Store.getOrder();
   images = await Store.getImages();
-  showArchived = (await Store.getSettings()).showArchived;
+  prices = (Store.getPrices ? await Store.getPrices() : {}) || {};
+  const s = await Store.getSettings();
+  showArchived = s.showArchived;
+  showAllPlaces = !!s.showAllPlaces;
 }
 
 browser.storage.onChanged.addListener(async (changes) => {
   await loadState();
   decorateAll();
-  // Don't rebuild the panel for note-only changes (would steal textarea focus).
+  // Don't rebuild the panel for note-only changes (would steal textarea focus),
+  // and never yank a row out from under an in-progress drag.
   const keys = Object.keys(changes);
+  if (dragRow) return;
   if (!(keys.length === 1 && keys[0] === "notes")) renderPanel();
 });
 
@@ -75,42 +82,161 @@ document.addEventListener("click", (e) => {
 
 /* ----------------------------- snapshot ----------------------------- */
 function snapshotFromCard(anchor, container, id) {
-  const img = container.querySelector("img");
+  const imgs = [...container.querySelectorAll("img")].map((i) => i.currentSrc || i.src).filter(Boolean);
   const lines = (container.innerText || "").split("\n").map((s) => s.trim()).filter(Boolean);
   const title = (anchor.getAttribute("aria-label") || lines[0] || `Listing ${id}`).trim();
   const price = lines.find((l) => CURRENCY.test(l)) || "";
   return {
     title: truncate(title, 120), price,
     url: new URL(anchor.getAttribute("href"), location.origin).href.split("?")[0],
-    thumbnail: img ? img.src : "",
+    thumbnail: imgs[0] || "",
+    // The popup card preloads its carousel, so this is a decent photo fallback
+    // for listings the interceptor hasn't harvested yet.
+    images: [...new Set(imgs)].slice(0, 10),
   };
 }
 
 /* ----------------------------- pin colouring ----------------------------- */
 // Coords of starred/maybe listings come from tagCoords (interceptor) + the
 // snapshot's own coord + the page's embedded deferred-state (instant first paint).
-let deferredCoords = null;
+// pageData: { id: { coord, images, price } } read once out of the server-rendered
+// blob. Gives instant coords for colouring and photos/price for anything tagged
+// off this page load (the interceptor covers listings that arrive later by XHR).
+let pageData = null, deferredCoords = null;
+function getPageData() {
+  if (pageData) return pageData;
+  pageData = {};
+  try {
+    for (const s of document.querySelectorAll('script[id^="data-deferred-state"]')) {
+      let j;
+      try { j = JSON.parse(s.textContent); } catch (_) { continue; }
+      const h = Filter.harvest(j);
+      for (const id of Object.keys(h)) pageData[id] = Object.assign(pageData[id] || {}, h[id]);
+    }
+  } catch (_) {}
+  return pageData;
+}
 function getDeferredCoords() {
   if (deferredCoords) return deferredCoords;
   deferredCoords = {};
-  try {
-    for (const s of document.querySelectorAll('script[id^="data-deferred-state"]')) {
-      const j = JSON.parse(s.textContent);
-      (function w(n) {
-        if (Array.isArray(n)) { n.forEach(w); return; }
-        if (n && typeof n === "object") {
-          const dsl = n.demandStayListing;
-          const c = dsl && dsl.location && dsl.location.coordinate;
-          if (dsl && dsl.id && c && typeof c.latitude === "number") {
-            const id = decodeId(dsl.id);
-            if (id) deferredCoords[id] = { lat: c.latitude, lng: c.longitude };
-          }
-          for (const k in n) w(n[k]);
-        }
-      })(j);
-    }
-  } catch (_) {}
+  const pd = getPageData();
+  for (const id in pd) if (pd[id].coord) deferredCoords[id] = pd[id].coord;
   return deferredCoords;
+}
+// Photos + normalised price for a listing, best source first.
+function mediaOf(id) {
+  const snap = snapOf(id), pd = getPageData()[id] || {};
+  const pick = (a) => (Array.isArray(a) && a.length ? a : null);
+  const imgs = pick(images[id]) || pick(pd.images) || pick(snap.images) || (snap.thumbnail ? [snap.thumbnail] : []);
+  return { imgs, price: prices[id] || pd.price || snap.price30 || null };
+}
+/* --- live price probing -------------------------------------------------
+   A saved listing keeps its /rooms/<id> link, and its price is re-read from
+   Airbnb whenever it's rendered. The room page itself carries no price (only a
+   coordinate), so the probe re-runs Airbnb's own search scoped to a tiny box
+   around that coordinate — which does server-render a price. See
+   scripts/recon_pdp.py and scripts/recon_probe.py. */
+const PROBE_TTL_MS = 15 * 60 * 1000;
+const PROBE_MAX_INFLIGHT = 2;
+const PROBE_MAX_PER_RENDER = 8;
+const PROBE_GAP_MS = 400;
+
+function currentCtx() { return typeof Filter !== "undefined" ? Filter.ctxOf(location.href) : ""; }
+function priceIsFresh(id) {
+  const p = prices[id];
+  return !!(p && p.ctx === currentCtx() && p.probedAt && Date.now() - p.probedAt < PROBE_TTL_MS);
+}
+function linkFor(id) {
+  const u = snapOf(id).url;
+  return (u && /\/rooms\/\d/.test(u)) ? u.split("?")[0] : `${location.origin}/rooms/${id}`;
+}
+
+let probeQueue = [], probeInflight = 0;
+const probeAttempted = new Set();   // `${id}|${ctx}` — one shot per context per page load
+
+function schedulePriceProbes(ids) {
+  if (typeof Filter === "undefined" || typeof fetch !== "function") return;
+  const ctx = currentCtx();
+  let queued = 0;
+  for (const id of ids) {
+    if (queued >= PROBE_MAX_PER_RENDER) break;
+    if (priceIsFresh(id) || probeAttempted.has(id + "|" + ctx) || probeQueue.includes(id)) continue;
+    probeQueue.push(id);
+    queued++;
+  }
+  pumpProbes();
+}
+function pumpProbes() {
+  while (probeInflight < PROBE_MAX_INFLIGHT && probeQueue.length) {
+    const id = probeQueue.shift();
+    const ctx = currentCtx();
+    if (priceIsFresh(id) || probeAttempted.has(id + "|" + ctx)) continue;
+    probeAttempted.add(id + "|" + ctx);
+    probeInflight++;
+    probePrice(id, ctx)
+      .catch((e) => console.warn("[Archiver] price probe failed for", id, e))
+      .then(() => { probeInflight--; setTimeout(pumpProbes, PROBE_GAP_MS); });
+  }
+}
+
+async function probePrice(id, ctx) {
+  let coord = coordFor(id);
+  if (!coord) coord = await coordFromListingPage(id);   // bootstrap from the saved link
+  if (!coord) return;
+
+  const res = await fetch(Filter.probeUrl(location.origin, location.search, coord), { credentials: "same-origin" });
+  if (!res.ok) return;
+  const found = Filter.harvestHtml(await res.text());
+
+  const stamp = { ctx, probedAt: Date.now() };
+  const tracked = new Set([...Object.keys(cats.starred), ...Object.keys(cats.maybe)]);
+  const patch = {};
+  // One probe returns every listing in the box, so refresh the neighbours too.
+  for (const fid of Object.keys(found)) {
+    if (!tracked.has(fid)) continue;
+    const e = found[fid];
+    patch[fid] = { images: e.images, coord: e.coord, price: e.price ? { ...e.price, ...stamp } : null };
+    if (e.price) probeAttempted.add(fid + "|" + ctx);
+  }
+  if (!found[id]) {
+    // Airbnb didn't return it for these dates — that's "not bookable", not a
+    // parse failure. Keep the last known figure so the row still says something.
+    const prev = prices[id] || {};
+    const last = prev.unavailable ? prev.lastMonthly : (prev.monthly != null ? prev.monthly : null);
+    patch[id] = { price: { ...stamp, unavailable: true, monthly: null, symbol: prev.symbol || "", lastMonthly: last } };
+  }
+  if (Object.keys(patch).length) await Store.setMediaBulk(patch);
+}
+
+// The room page has no price, but it does carry the coordinate a probe needs —
+// so the saved link alone is enough to price a listing we've never seen on a map.
+async function coordFromListingPage(id) {
+  const res = await fetch(linkFor(id), { credentials: "same-origin" });
+  if (!res.ok) return null;
+  return Filter.coordFromHtml(await res.text());
+}
+
+// Prices for listings on the page we're already on: free, no probe needed.
+async function seedFromPageData() {
+  if (typeof Filter === "undefined" || !Store.setMediaBulk) return;
+  const ctx = currentCtx(), pd = getPageData();
+  const stamp = { ctx, probedAt: Date.now() };
+  const patch = {};
+  for (const id of [...Object.keys(cats.starred), ...Object.keys(cats.maybe)]) {
+    const e = pd[id];
+    if (!e) continue;
+    patch[id] = { images: e.images, coord: e.coord, price: e.price ? { ...e.price, ...stamp } : null };
+    if (e.price) probeAttempted.add(id + "|" + ctx);
+  }
+  if (Object.keys(patch).length) await Store.setMediaBulk(patch);
+}
+
+// Remember photos/price for a listing the moment it's tagged.
+function seedMedia(id, snap) {
+  const pd = getPageData()[id] || {};
+  const imgs = (pd.images && pd.images.length) ? pd.images : (snap && snap.images) || null;
+  const coord = pd.coord || parsePos(snap && snap.coord);
+  if (Store.setMedia && (imgs || pd.price || coord)) Store.setMedia(id, imgs, pd.price, coord).catch(() => {});
 }
 function coordVals(catMap) {
   const dc = getDeferredCoords();
@@ -256,6 +382,7 @@ function decorateMapCards() {
       e.preventDefault(); e.stopPropagation();
       const cur = await Store.getCategory(id); const next = cur === target ? null : target;
       await Store.setCategory(id, snap, next); reflect(next);
+      if (next) seedMedia(id, snap);
     };
     star.addEventListener("click", toggle("starred"));
     maybe.addEventListener("click", toggle("maybe"));
@@ -272,7 +399,13 @@ function ensurePanel() {
   panelEl = document.createElement("div"); panelEl.className = "archiver-panel";
   const head = document.createElement("div"); head.className = "archiver-panel-head";
   let ver = ""; try { ver = browser.runtime.getManifest().version; } catch (_) {}
-  head.textContent = "My listings" + (ver ? "  ·  v" + ver : "");
+  const title = document.createElement("span"); title.className = "archiver-panel-title";
+  title.textContent = "My listings" + (ver ? "  ·  v" + ver : "");
+  const count = document.createElement("span"); count.className = "archiver-panel-count";
+  const scope = document.createElement("button");
+  scope.type = "button"; scope.className = "archiver-scope";
+  scope.addEventListener("click", () => Store.setSetting("showAllPlaces", !showAllPlaces));
+  head.append(title, count, scope);
   const list = document.createElement("div"); list.className = "archiver-panel-list";
   panelEl.append(head, list);
   document.body.appendChild(panelEl);
@@ -287,12 +420,18 @@ function positionPanel() {
   // of Airbnb cards that peeks there) down to the bottom of the map. Bounded so
   // it never rides up over the header.
   const top = Math.max(56, r.top - 96);
+  // Clamp the bottom to the viewport. Airbnb's map container can be far taller
+  // than the window; sizing the panel to it pushes the list off-screen, where it
+  // gets clipped instead of scrolling.
+  const bottom = Math.min(r.top + r.height, window.innerHeight);
   ensurePanel();
-  panelEl.style.display = "block";
+  // Must stay "flex" — an inline display:block here beats the stylesheet, the
+  // list stops being a flex item, and it grows past the panel instead of scrolling.
+  panelEl.style.display = "flex";
   panelEl.style.top = top + "px";
   panelEl.style.left = "0px";
   panelEl.style.width = Math.round(r.left) + "px";
-  panelEl.style.height = Math.round(r.top + r.height - top) + "px";
+  panelEl.style.height = Math.max(120, Math.round(bottom - top)) + "px";
   return true;
 }
 function orderedIds() {
@@ -303,102 +442,352 @@ function orderedIds() {
   const rest = all.filter((id) => !placed.has(id)).sort((a, b) => (snapOf(b).ts || 0) - (snapOf(a).ts || 0));
   return [...inOrder, ...rest];
 }
-function reorder(fromId, toId) {
-  if (fromId === toId) return;
-  const ids = orderedIds().filter((x) => x !== fromId);
-  const idx = ids.indexOf(toId);
-  ids.splice(idx < 0 ? ids.length : idx, 0, fromId);
-  order = ids; Store.setOrder(ids);
+
+/* --- what the map is currently looking at ------------------------------
+   Airbnb keeps the live viewport in the URL as ne_lat/ne_lng/sw_lat/sw_lng and
+   rewrites them on every pan and zoom (verified live, scripts/recon_bounds.py).
+   A fresh city search has no map params yet, so fall back to the spread of the
+   pins actually being rendered. */
+function mapBounds() {
+  const p = new URLSearchParams(location.search);
+  const num = (k) => { const v = parseFloat(p.get(k)); return isFinite(v) ? v : null; };
+  const neLat = num("ne_lat"), neLng = num("ne_lng"), swLat = num("sw_lat"), swLng = num("sw_lng");
+  if (neLat != null && neLng != null && swLat != null && swLng != null) {
+    return {
+      minLat: Math.min(swLat, neLat), maxLat: Math.max(swLat, neLat),
+      minLng: Math.min(swLng, neLng), maxLng: Math.max(swLng, neLng), src: "url",
+    };
+  }
+  const pts = [];
+  for (const m of document.querySelectorAll("gmp-advanced-marker")) {
+    const c = parsePos(m.getAttribute("position"));
+    if (c) pts.push(c);
+  }
+  if (pts.length < 2) return null;
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  for (const c of pts) {
+    minLat = Math.min(minLat, c.lat); maxLat = Math.max(maxLat, c.lat);
+    minLng = Math.min(minLng, c.lng); maxLng = Math.max(maxLng, c.lng);
+  }
+  // Pins sit inside the viewport, so pad out a bit or edge listings drop off.
+  const padLat = Math.max(0.15 * (maxLat - minLat), 0.002);
+  const padLng = Math.max(0.15 * (maxLng - minLng), 0.002);
+  return { minLat: minLat - padLat, maxLat: maxLat + padLat, minLng: minLng - padLng, maxLng: maxLng + padLng, src: "pins" };
 }
+function inBounds(c, b) {
+  return !!(c && b && c.lat >= b.minLat && c.lat <= b.maxLat && c.lng >= b.minLng && c.lng <= b.maxLng);
+}
+// Split the list into what's on the map now, what isn't, and what we have no
+// coordinate for. Unplaced listings are always shown — hiding a listing we
+// simply never learned the location of would look like we lost it.
+function panelGroups() {
+  const ids = orderedIds();
+  const b = showAllPlaces ? null : mapBounds();
+  if (!b) return { shown: ids, unplaced: [], hidden: 0, total: ids.length, filtered: false };
+  const shown = [], unplaced = [];
+  let hidden = 0;
+  for (const id of ids) {
+    const c = coordFor(id);
+    if (!c) unplaced.push(id);
+    else if (inBounds(c, b)) shown.push(id);
+    else hidden++;
+  }
+  return { shown, unplaced, hidden, total: ids.length, filtered: true };
+}
+
+/* --- drag to reorder ---------------------------------------------------
+   Pointer-driven, not HTML5 drag-and-drop: Airbnb's own handlers swallow
+   dragstart/drop on the page, and this also gives live reordering. */
+let dragRow = null;
+function attachDrag(handle, row) {
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const list = row.parentElement;
+    if (!list) return;
+    const startY = e.clientY;
+    let offset = 0;
+    dragRow = row;
+    row.classList.add("dragging");
+    document.body.style.userSelect = "none";
+
+    const apply = (y) => { row.style.transform = `translateY(${(y - startY) + offset}px)`; };
+    const move = (ev) => {
+      // Autoscroll when dragging past either end of the list.
+      const lr = list.getBoundingClientRect();
+      const edge = ev.clientY < lr.top + 60 ? -18 : ev.clientY > lr.bottom - 60 ? 18 : 0;
+      if (edge) { const was = list.scrollTop; list.scrollTop += edge; offset += list.scrollTop - was; }
+      apply(ev.clientY);
+
+      // Swap with whichever neighbour's midpoint we've crossed, then re-anchor
+      // the transform so the row stays put under the cursor.
+      const mid = row.getBoundingClientRect().top + row.offsetHeight / 2;
+      const prev = row.previousElementSibling, next = row.nextElementSibling;
+      let ref = null;
+      if (prev && mid < prev.getBoundingClientRect().top + prev.offsetHeight / 2) ref = prev;
+      else if (next && mid > next.getBoundingClientRect().top + next.offsetHeight / 2) ref = next.nextElementSibling;
+      else return;
+      const wasTop = row.getBoundingClientRect().top;
+      row.style.transform = "none";
+      list.insertBefore(row, ref);
+      offset = (wasTop - row.getBoundingClientRect().top) - (ev.clientY - startY);
+      apply(ev.clientY);
+    };
+    const up = () => {
+      // Listen on window, not the handle: re-inserting the row mid-drag can drop
+      // an element-scoped pointer capture.
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+      row.style.transform = "";
+      row.classList.remove("dragging");
+      document.body.style.userSelect = "";
+      dragRow = null;
+      commitOrder([...list.children].map((c) => c.dataset.id).filter(Boolean));
+    };
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+  });
+}
+
+// The panel usually shows a subset (only what's on the map), so a drop must not
+// overwrite the global order with just those ids — that would throw away the
+// ordering of everything off-screen. Splice the new sequence back into the slots
+// the visible rows already occupied, leaving hidden listings where they are.
+function commitOrder(visibleNow) {
+  const seq = visibleNow.slice();
+  const vis = new Set(seq);
+  let k = 0;
+  const next = orderedIds().map((id) => (vis.has(id) && k < seq.length ? seq[k++] : id));
+  order = next;
+  Store.setOrder(next);
+}
+
+/* --- hover a row -> light up its map pin (Airbnb's own link is gone since
+       our panel replaced its cards, so we rebuild it) --- */
+function coordFor(id) {
+  return tagCoords[id] || parsePos(snapOf(id).coord) || (getPageData()[id] || {}).coord || null;
+}
+let hoverMarker = null;
+function highlightMarker(id, on) {
+  if (hoverMarker) {
+    hoverMarker.style.zIndex = "";
+    const el = colorableEl(hoverMarker);
+    if (el) el.classList.remove("archiver-pill-hover");
+    hoverMarker = null;
+  }
+  if (!on) return;
+  const c = coordFor(id);
+  if (!c) return;
+  for (const m of document.querySelectorAll("gmp-advanced-marker")) {
+    if (m.style.display === "none") continue;
+    const p = parsePos(m.getAttribute("position"));
+    if (!p || Math.abs(p.lat - c.lat) > 1e-4 || Math.abs(p.lng - c.lng) > 1e-4) continue;
+    m.style.zIndex = "9999";
+    const el = colorableEl(m);
+    if (el) el.classList.add("archiver-pill-hover");
+    hoverMarker = m;
+    return;
+  }
+}
+
+/* --- price, normalised to 30 nights --- */
+function fmtMoney(sym, v) { return (sym || "") + Math.round(v).toLocaleString("en-US"); }
+function priceText(id) {
+  const { price } = mediaOf(id);
+  if (price && price.unavailable) {
+    return {
+      head: "Unavailable", unit: "", muted: true,
+      sub: price.lastMonthly != null
+        ? "last seen " + fmtMoney(price.symbol, price.lastMonthly) + " / 30 nights"
+        : "not offered for these dates",
+    };
+  }
+  if (price && price.monthly != null) {
+    const bits = [];
+    if (price.nightly != null) bits.push(fmtMoney(price.symbol, price.nightly) + "/night");
+    if (price.basis === "monthly") bits.push("Airbnb monthly rate");
+    if (price.total != null && price.nights) bits.push(fmtMoney(price.symbol, price.total) + " for " + price.nights + " nights");
+    if (price.original != null && price.original > price.monthly) bits.push("was " + fmtMoney(price.symbol, price.original));
+    return {
+      head: fmtMoney(price.symbol, price.monthly), unit: "/ 30 nights", sub: bits.join("  ·  "),
+      stale: price.ctx !== currentCtx(),   // quoted for different dates; a probe is on the way
+    };
+  }
+  const raw = snapOf(id).price || "";
+  return { head: raw || "—", unit: "", sub: raw ? "" : "checking price…", stale: true };
+}
+
 function buildCarousel(urls) {
-  const wrap = document.createElement("div"); wrap.className = "archiver-carousel";
-  const img = document.createElement("img"); img.className = "archiver-carousel-img"; img.alt = ""; img.loading = "lazy";
+  const wrap = document.createElement("div"); wrap.className = "archiver-media";
+  const img = document.createElement("img");
+  img.className = "archiver-media-img"; img.alt = ""; img.loading = "lazy"; img.draggable = false;
   wrap.appendChild(img);
-  if (!urls.length) { wrap.classList.add("archiver-carousel--empty"); return wrap; }
+  if (!urls.length) { wrap.classList.add("archiver-media--empty"); return wrap; }
   let i = 0; img.src = urls[0];
-  const count = document.createElement("div"); count.className = "archiver-carousel-count"; count.textContent = "1/" + urls.length;
-  const show = (n) => { i = (n + urls.length) % urls.length; img.src = urls[i]; count.textContent = (i + 1) + "/" + urls.length; };
-  const prev = document.createElement("button"); prev.className = "archiver-cnav archiver-cnav--prev"; prev.textContent = "‹";
-  const next = document.createElement("button"); next.className = "archiver-cnav archiver-cnav--next"; next.textContent = "›";
-  prev.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); show(i - 1); });
-  next.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); show(i + 1); });
-  wrap.append(prev, next, count);
-  if (urls.length < 2) { prev.style.display = "none"; next.style.display = "none"; count.style.display = "none"; }
+  if (urls.length < 2) return wrap;
+
+  const count = document.createElement("div"); count.className = "archiver-media-count"; count.textContent = "1/" + urls.length;
+  const show = (n) => {
+    i = (n + urls.length) % urls.length;
+    img.src = urls[i];
+    count.textContent = (i + 1) + "/" + urls.length;
+    new Image().src = urls[(i + 1) % urls.length]; // prefetch the next one
+  };
+  const nav = (cls, glyph, delta) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "archiver-cnav " + cls; b.textContent = glyph;
+    b.addEventListener("pointerdown", (e) => e.stopPropagation());
+    b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); show(i + delta); });
+    return b;
+  };
+  wrap.append(nav("archiver-cnav--prev", "‹", -1), nav("archiver-cnav--next", "›", 1), count);
   return wrap;
 }
+
 function panelRow(id) {
   const snap = snapOf(id), cat = catOf(id);
   const row = document.createElement("div");
-  row.className = "archiver-row archiver-row--" + cat; row.dataset.id = id;
-  row.addEventListener("dragover", (e) => e.preventDefault());
-  row.addEventListener("drop", (e) => { e.preventDefault(); reorder(e.dataTransfer.getData("text/plain"), id); });
+  row.className = "archiver-row archiver-row--" + cat;
+  row.dataset.id = id;
+  row.addEventListener("mouseenter", () => highlightMarker(id, true));
+  row.addEventListener("mouseleave", () => highlightMarker(id, false));
 
-  const urls = (images[id] && images[id].length) ? images[id] : (snap.thumbnail ? [snap.thumbnail] : []);
-  const media = buildCarousel(urls);
+  const media = buildCarousel(mediaOf(id).imgs);
+  const handle = document.createElement("div");
+  handle.className = "archiver-handle"; handle.textContent = "⠿"; handle.title = "Drag to reorder";
+  attachDrag(handle, row);
+  media.appendChild(handle);
 
-  const handle = document.createElement("div"); handle.className = "archiver-handle"; handle.textContent = "⠿"; handle.title = "Drag to reorder"; handle.draggable = true;
-  handle.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", id); row.classList.add("dragging"); });
-  handle.addEventListener("dragend", () => row.classList.remove("dragging"));
+  const meta = document.createElement("div"); meta.className = "archiver-row-meta";
+
+  const head = document.createElement("div"); head.className = "archiver-row-head";
+  const p = priceText(id);
+  const a = document.createElement("a");
+  a.className = "archiver-row-price";
+  a.href = snap.url || `https://www.airbnb.com/rooms/${id}`;
+  a.target = "_blank"; a.rel = "noreferrer"; a.title = snap.title || `Listing ${id}`;
+  a.textContent = p.head;
+  if (p.muted) a.classList.add("archiver-row-price--muted");
+  if (p.stale) a.classList.add("archiver-row-price--stale");
+  if (p.unit) { const u = document.createElement("span"); u.className = "archiver-row-unit"; u.textContent = p.unit; a.appendChild(u); }
 
   const ctrls = document.createElement("div"); ctrls.className = "archiver-row-ctrls";
-  const mk = (glyph, on, target) => {
-    const b = document.createElement("button"); b.className = "archiver-rowbtn" + (on ? " on" : ""); b.textContent = glyph;
+  const mk = (glyph, on, target, title) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "archiver-rowbtn" + (on ? " on" : ""); b.textContent = glyph; b.title = title;
+    b.addEventListener("pointerdown", (e) => e.stopPropagation());
     b.addEventListener("click", async (e) => {
       e.preventDefault(); e.stopPropagation();
       if (target === "archived") { await Store.setCategory(id, snap, "archived"); return; }
-      const cur = catOf(id); await Store.setCategory(id, snap, cur === target ? null : target);
+      const cur = catOf(id);
+      await Store.setCategory(id, snap, cur === target ? null : target);
     });
     return b;
   };
-  ctrls.append(mk("★", cat === "starred", "starred"), mk("?", cat === "maybe", "maybe"), mk("🗑", false, "archived"));
-  media.append(handle, ctrls); // overlaid on the image
+  ctrls.append(mk("★", cat === "starred", "starred", "Star"), mk("?", cat === "maybe", "maybe", "Maybe"), mk("🗑", false, "archived", "Archive"));
+  head.append(a, ctrls);
 
-  const meta = document.createElement("div"); meta.className = "archiver-row-meta";
-  const a = document.createElement("a"); a.className = "archiver-row-title"; a.href = snap.url || `https://www.airbnb.com/rooms/${id}`; a.target = "_blank"; a.rel = "noreferrer"; a.textContent = snap.title || `Listing ${id}`;
-  const price = document.createElement("div"); price.className = "archiver-row-price"; price.textContent = snap.price || "";
-  const note = document.createElement("textarea"); note.className = "archiver-note"; note.placeholder = "Add a note…"; note.rows = 1; note.value = notes[id] || "";
-  const grow = () => { note.style.height = "auto"; note.style.height = Math.min(note.scrollHeight, 120) + "px"; };
-  note.addEventListener("input", () => grow());
+  const sub = document.createElement("div"); sub.className = "archiver-row-sub"; sub.textContent = p.sub;
+
+  const note = document.createElement("textarea");
+  note.className = "archiver-note"; note.placeholder = "Add a note…"; note.value = notes[id] || "";
   note.addEventListener("input", debounce(() => Store.setNote(id, note.value), 400));
-  setTimeout(grow, 0);
-  meta.append(a, price, note);
 
+  meta.append(head, sub, note);
   row.append(media, meta);
   return row;
 }
 function renderPanel() {
+  if (dragRow) return;
   ensurePanel();
   positionPanel();
   const list = panelEl.querySelector(".archiver-panel-list");
   if (!list) return;
+  highlightMarker(null, false);
+  const scroll = list.scrollTop;
   list.textContent = "";
-  const ids = orderedIds();
-  if (!ids.length) {
+
+  const g = panelGroups();
+  lastSig = groupSig(g);
+
+  const count = panelEl.querySelector(".archiver-panel-count");
+  const scope = panelEl.querySelector(".archiver-scope");
+  if (count) count.textContent = g.filtered ? `${g.shown.length} of ${g.total} on this map` : `${g.total} listing${g.total === 1 ? "" : "s"}`;
+  if (scope) {
+    scope.textContent = showAllPlaces ? "On this map" : "Show all";
+    scope.title = showAllPlaces
+      ? "Only show listings inside the current map view"
+      : `Show all ${g.total} listings, including other cities`;
+    scope.classList.toggle("on", showAllPlaces);
+  }
+
+  if (!g.total) {
     const e = document.createElement("div"); e.className = "archiver-panel-empty";
     e.textContent = "Nothing here yet — star or “maybe” listings from the map.";
     list.appendChild(e); return;
   }
-  for (const id of ids) list.appendChild(panelRow(id));
+  for (const id of g.shown) list.appendChild(panelRow(id));
+
+  if (g.unplaced.length) {
+    list.appendChild(divider(`${g.unplaced.length} without a saved location`));
+    for (const id of g.unplaced) list.appendChild(panelRow(id));
+  }
+  if (!g.shown.length && !g.unplaced.length) {
+    const e = document.createElement("div"); e.className = "archiver-panel-empty";
+    e.textContent = `None of your ${g.total} listings are in this part of the map.`;
+    list.appendChild(e);
+  } else if (g.hidden) {
+    list.appendChild(divider(`${g.hidden} more elsewhere on the map`));
+  }
+  list.scrollTop = scroll; // a re-render shouldn't jump you back to the top
+  // Whatever is on screen gets its price re-read from Airbnb.
+  try { schedulePriceProbes([...g.shown, ...g.unplaced]); } catch (e) { console.warn("[Archiver] probe scheduling", e); }
+}
+function divider(text) {
+  const d = document.createElement("div");
+  d.className = "archiver-divider"; d.textContent = text;
+  return d;
 }
 
 /* ----------------------------- orchestration ----------------------------- */
 // NOTE: we do NOT hide Airbnb's own cards (walking up to a card container could
 // resolve to an ancestor that contains the map and blank the page). Instead the
 // opaque panel fully covers the results column (see positionPanel).
+// Panning the map rewrites the URL bounds without necessarily mutating anything
+// we observe, so re-render whenever the set of in-view listings actually changes.
+let lastSig = null;
+function groupSig(g) {
+  return g.shown.join(",") + "|" + g.unplaced.join(",") + "|" + g.hidden + "|" + (showAllPlaces ? 1 : 0);
+}
+function syncPanelToMap() {
+  if (dragRow) return;
+  let g;
+  try { g = panelGroups(); } catch (e) { return; }
+  if (groupSig(g) !== lastSig) renderPanel();
+}
+
 function decorateAll() {
   try { decorateMapCards(); } catch (e) { console.warn("[Archiver] decorateMapCards", e); }
   try { hideArchivedMarkers(); } catch (e) { console.warn("[Archiver] hideArchivedMarkers", e); }
   try { colorMarkers(); } catch (e) { console.warn("[Archiver] colorMarkers", e); }
   try { positionPanel(); } catch (e) { console.warn("[Archiver] positionPanel", e); }
+  try { syncPanelToMap(); } catch (e) { console.warn("[Archiver] syncPanelToMap", e); }
 }
 const observer = new MutationObserver(debounce(decorateAll, 250));
 window.addEventListener("resize", debounce(positionPanel, 200));
+window.addEventListener("popstate", () => setTimeout(syncPanelToMap, 50));
 
 async function start() {
   await loadState();
   observer.observe(document.body, { childList: true, subtree: true });
+  // Listings rendered on this very page are priced for free — probe only the rest.
+  try { await seedFromPageData(); } catch (e) { console.warn("[Archiver] seedFromPageData", e); }
   decorateAll();
   renderPanel();
+  // Backstop: history.pushState from the page fires no event we can see.
+  setInterval(syncPanelToMap, 700);
   console.log("[Archiver] active");
 }
 start();

@@ -23,6 +23,20 @@ issues without the user in the loop.
   ```
 - `scripts/test-filter.js` — Node unit test for the pure interceptor logic
   (`node scripts/test-filter.js`; needs `state.json` from recon).
+- `scripts/test-price.js` — Node unit test for money parsing + the per-30-nights
+  price normalisation, against synthetic shapes *and* the real `state.json`.
+- `scripts/probe_panel.js` — panel geometry diagnostic (computed styles, boxes,
+  scrollHeight vs clientHeight). Use it when the panel lays out or scrolls wrong.
+- `scripts/recon_bounds.py` — confirms the map's live viewport is readable from
+  the URL (`ne_lat/ne_lng/sw_lat/sw_lng`) by panning/zooming and re-reading it.
+- `scripts/recon_pdp.py` / `scripts/recon_probe.py` — how live price probing was
+  established: the `/rooms/<id>` page has **no price** (only a coordinate), but a
+  search scoped to a tiny box around that coordinate does. Re-run these if
+  probing ever starts returning "Unavailable" for everything.
+- `scripts/recon_price.py` — dumps every distinct `structuredDisplayPrice` shape
+  on a search and reports what fraction `Filter.priceOf` can normalise. Run it
+  against a *new kind of search* (monthly, nightly, no dates, other currency)
+  whenever a price shows as "price not captured yet".
 
 Requirements: `pip install selenium` (geckodriver is auto-fetched by Selenium
 Manager) and Node ≥ 22 (we run 24).
@@ -33,7 +47,9 @@ its content scripts** in this setup (verified even on example.com). So
 `test_decorator.py` instead:
 1. loads the live Airbnb search page (no extension),
 2. injects a tiny in-memory `Store` / `browser` **stub** plus the real
-   `extension/content.js` via `execute_script`,
+   `extension/filter.js`, `content.js` **and `content.css`** via
+   `execute_script` — the stylesheet matters: without it nothing about layout,
+   geometry or scrolling is actually being tested (this hid a real bug),
 3. drives the flows (star a card, click a map pin, click our trash) and asserts
    the DOM result (toolbars present, card hidden, marker hidden, toast shown,
    item committed to the stubbed store, marker stays hidden after a re-render).
