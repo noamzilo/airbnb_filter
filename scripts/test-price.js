@@ -132,6 +132,30 @@ check("coordFromHtml reads a room page",
   JSON.stringify(Filter.coordFromHtml('{"latitude":31.78485,"longitude":35.20905}')));
 check("coordFromHtml on a page without coords", Filter.coordFromHtml("<html>nothing</html>") === null);
 
+/* ---- host / owner ---- */
+// Shaped exactly like the live room page (scripts/recon_hostname.py).
+const PDP = '...{"__typename":"StaysPdpHostInfo","passportData":{"__typename":"PassportCardData",'
+  + '"name":"Corporate Stays - Paraguay","userId":"RGVtYW5kVXNlcjo1MTAwNDI2Ng==",'
+  + '"contextualUserId":"Q29udGV4dHVhbFVzZXI6MTQ2","titleText":"Superhost"}}...'
+  + '{"isSuperHost":"true","hostId":"51004266"}...'
+  + '"name":{"__typename":"UGCText","localizedString":"Light-Filled 1BR w/ Pool & Gym Access"}...';
+let h = Filter.hostFromHtml(PDP);
+check("host name from PassportCardData", h && h.name === "Corporate Stays - Paraguay", JSON.stringify(h));
+check("host id", h.hostId === "51004266", JSON.stringify(h));
+check("listing name", h.listingName === "Light-Filled 1BR w/ Pool & Gym Access", JSON.stringify(h));
+
+h = Filter.hostFromHtml('<title>Cosy Loft - Apartments for Rent in Jerusalem - Airbnb</title> Hosted by Dana');
+check("falls back to 'Hosted by'", h && h.name === "Dana", JSON.stringify(h));
+check("falls back to <title> for the listing name", h.listingName === "Cosy Loft", JSON.stringify(h));
+check("a login page yields no host", Filter.hostFromHtml("<title>Log In / Sign Up - Airbnb</title>") === null);
+
+check("contact url needs no thread id",
+  Filter.contactUrl("https://www.airbnb.com", "123") === "https://www.airbnb.com/contact_host/123/send_message");
+check("thread url", Filter.threadUrl("https://www.airbnb.com", "999") === "https://www.airbnb.com/guest/messages/999");
+check("listing id read out of a thread page",
+  Filter.listingIdFromThread('<a href="/rooms/1239210296375530793?x=1">Cosy</a>') === "1239210296375530793");
+check("thread page with no listing", Filter.listingIdFromThread("<div>hi</div>") === null);
+
 /* ---- against the real recon blob ---- */
 const statePath = path.join(__dirname, "..", "state.json");
 if (fs.existsSync(statePath)) {

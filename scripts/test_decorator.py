@@ -22,7 +22,7 @@ URL = ("https://www.airbnb.com/s/Asuncion--Paraguay/homes?adults=1"
 STUB = r"""
 window.__cats={starred:{},maybe:{},archived:{}};window.__settings={showArchived:false};
 window.__tagcoords={};window.__notes={};window.__order=[];window.__ls=[];
-window.__images={};window.__prices={};
+window.__images={};window.__prices={};window.__hosts={};
 const fire=(ch)=>window.__ls.forEach(f=>{try{f(ch||{})}catch(e){}});
 const C=["starred","maybe","archived"];
 window.browser={storage:{onChanged:{addListener:f=>window.__ls.push(f)}}};
@@ -31,6 +31,8 @@ window.Store={
   getCategory:async i=>{for(const c of C)if(window.__cats[c][i])return c;return null;},
   setCategory:async(i,s,c)=>{for(const k of C)delete window.__cats[k][i];if(c)window.__cats[c][i]={...(s||{}),ts:Date.now?1:1};fire({starred:{}});},
   getStarredData:async()=>({}),setStarredData:async()=>{},getTagCoords:async()=>window.__tagcoords||{},
+  getHosts:async()=>window.__hosts||{},
+  setHost:async(i,info)=>{if(!info)return false;window.__hosts=window.__hosts||{};window.__hosts[i]={...(window.__hosts[i]||{}),...info};fire({hosts:{}});return true;},
   getImages:async()=>window.__images||{},getPrices:async()=>window.__prices||{},
   setMedia:async(i,im,p,c)=>Store.setMediaBulk({[i]:{images:im,price:p,coord:c}}),
   setMediaBulk:async(e)=>{let n=0;for(const id in e){const v=e[id]||{};
@@ -459,6 +461,49 @@ try:
         check("unavailable row says so", "Unavailable" in d.execute_script(
             "const r=document.querySelector('.archiver-row'); return r?r.innerText:''"),
             d.execute_script("const r=document.querySelector('.archiver-row'); return r?r.innerText.split('\\n')[0]:''"))
+
+    # --- host name + link to the conversation --------------------------------
+    # Real listing id off this page; its host name is fetched live from the room
+    # page (that page needs no login, unlike /guest/messages).
+    # Must be a DIFFERENT listing from the probe target above: the room page is
+    # fetched once per listing per page load, so reusing it would hit that cache
+    # and never re-populate the (deliberately cleared) host store.
+    real = d.execute_script("""
+      const skip = arguments[0];
+      const ids = [...document.querySelectorAll('a[href*="/rooms/"]')]
+        .map(a => (a.getAttribute('href').match(/\\/rooms\\/(\\d+)/)||[])[1])
+        .filter(Boolean);
+      return ids.find(i => i !== skip) || null;
+    """, (target or {}).get("id"))
+    check("found a real listing for the host lookup", bool(real), str(real))
+    if real:
+        d.execute_script("""
+          const id=arguments[0];
+          window.__cats={starred:{[id]:{title:'host target',url:'https://www.airbnb.com/rooms/'+id,ts:1}},maybe:{},archived:{}};
+          window.__hosts={}; window.__prices={}; window.__order=[];
+          window.__settings.showAllPlaces=true;
+          window.__ls.forEach(f=>f({starred:{}}));
+        """, real)
+        # Don't race the fetch: just require the host line to render something
+        # from the first paint (the pending state, or an already-resolved name).
+        time.sleep(1.0)
+        line = d.execute_script("const r=document.querySelector('.archiver-row-host'); return r?r.innerText:''")
+        check("host line renders immediately", ("looking up host" in line) or ("Hosted by" in line), repr(line))
+
+        got = None
+        for _ in range(30):
+            got = d.execute_script("return window.__hosts[arguments[0]] || null", real)
+            if got and got.get("name"): break
+            time.sleep(1)
+        check("host name fetched live from the room page", bool(got and got.get("name")), str(got))
+        if got and got.get("name"):
+            check("host name rendered in the row", got["name"] in d.execute_script(
+                "const r=document.querySelector('.archiver-row-host'); return r?r.innerText:''"),
+                d.execute_script("const r=document.querySelector('.archiver-row-host'); return r?r.innerText:''"))
+            check("real listing name captured too", bool(got.get("listingName")), str(got))
+        chat = d.execute_script("const a=document.querySelector('.archiver-host-chat'); return a?a.getAttribute('href'):''")
+        check("row links to the conversation with the host",
+              chat.endswith(f"/contact_host/{real}/send_message"), repr(chat))
 
     print("\n" + ("ALL PASS" if all(results) else "SOME FAILED"), flush=True)
 finally:

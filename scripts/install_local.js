@@ -24,6 +24,8 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { spawnSync, spawn } = require("child_process");
+const mozlz4 = require("./lib/mozlz4.js");
+const { repairSession } = require("./lib/session.js");
 
 const ROOT = path.join(__dirname, "..");
 const ARTIFACTS = path.join(ROOT, "web-ext-artifacts");
@@ -323,6 +325,81 @@ function armSessionRestore() {
 	return "armed browser.sessionstore.resume_session_once";
 }
 
+// Keeping every window across the restart takes two steps, because two different
+// things can lose one:
+//
+//  1. Firefox persists the session on a timer (browser.sessionstore.interval, 15s by
+//     default). A window it has not written yet cannot be restored by anything -- so
+//     before closing we WAIT for its snapshot to list as many windows as are really
+//     on screen. Measured: a just-opened window took ~21s to appear.
+//  2. Closing windows one at a time is not a quit. Firefox files a window that closes
+//     while others are still open under "recently closed windows" (_closedWindows),
+//     and restore only brings back state.windows -- that is how a 3-window browser
+//     came back as 1. So after shutdown we promote those back into state.windows.
+//
+// If both fail, fall back to the pre-close snapshot. Anything unexpected leaves the
+// session exactly as Firefox wrote it.
+
+const SESSION_CLEAN = path.join(profileDir, "sessionstore.jsonlz4");
+const SESSION_LIVE = path.join(profileDir, "sessionstore-backups", "recovery.jsonlz4");
+
+// recovery.jsonlz4 is the live session; sessionstore.jsonlz4 can be a stale file from
+// the previous run, so only fall back to it when there is no live one.
+function readSession() {
+	for (const f of [SESSION_LIVE, SESSION_CLEAN]) {
+		if (!fs.existsSync(f)) continue;
+		try {
+			return { file: f, state: JSON.parse(mozlz4.read(f)) };
+		} catch {
+			/* try the next one */
+		}
+	}
+	return null;
+}
+
+function writeSession(file, state) {
+	const tmp = `${file}.new`;
+	mozlz4.write(tmp, JSON.stringify(state));
+	JSON.parse(mozlz4.read(tmp)); // refuse to install anything we cannot read back
+	fs.renameSync(tmp, file);
+}
+
+function captureSession(liveWindows, timeoutMs = 30000) {
+	const deadline = Date.now() + timeoutMs;
+	let best = null;
+	for (;;) {
+		const got = readSession();
+		if (got && (!best || (got.state.windows || []).length > (best.windows || []).length)) {
+			best = got.state;
+		}
+		if (best && (best.windows || []).length >= liveWindows) return { state: best, complete: true };
+		if (Date.now() >= deadline) return { state: best, complete: false };
+		sleep(1000);
+	}
+}
+
+function restoreAllWindows(snapshot, sinceMs) {
+	let final = null;
+	if (fs.existsSync(SESSION_CLEAN)) {
+		try {
+			final = JSON.parse(mozlz4.read(SESSION_CLEAN));
+		} catch (e) {
+			return `session file unreadable (${e.message}) -- left as Firefox wrote it`;
+		}
+	}
+	const { state, note, changed } = repairSession(final, snapshot, sinceMs);
+	if (!changed || !state) return note;
+	try {
+		writeSession(SESSION_CLEAN, state);
+		if (fs.existsSync(SESSION_LIVE)) writeSession(SESSION_LIVE, state);
+	} catch (e) {
+		rm(`${SESSION_CLEAN}.new`);
+		rm(`${SESSION_LIVE}.new`);
+		return `could not repair the session (${e.message}) -- left as Firefox wrote it`;
+	}
+	return note;
+}
+
 // Reopen the way it was opened, minus any URLs it happened to be launched with.
 function relaunchArgs(cmd) {
 	const out = [];
@@ -354,10 +431,20 @@ if (!procs.length) {
 		process.exit(0);
 	}
 	const nWindows = countWindows(pids);
-	console.log(`\nclosing Firefox (pid ${pids.join(", ")}, ${nWindows} window(s)) -- graceful, no /F...`);
-	// WM_CLOSE to EVERY top-level window == clicking X on each one, so Firefox
-	// shuts down cleanly and writes its session. Closing only the main window
-	// (what taskkill does) just destroys one window and leaves the browser up.
+	console.log(`\nrestarting Firefox (pid ${pids.join(", ")}, ${nWindows} window(s)) -- graceful, no /F...`);
+	// Wait for Firefox to have written every window to its session before closing
+	// anything: a window it has not persisted yet is one nothing can bring back.
+	const snap = captureSession(nWindows);
+	if (!snap.complete) {
+		console.log(
+			`  warning: Firefox has only persisted ${((snap.state && snap.state.windows) || []).length}` +
+				` of ${nWindows} window(s) after 30s; a very recently opened window may not come back.`,
+		);
+	}
+	const closeStartedAt = Date.now();
+	// WM_CLOSE to EVERY top-level window == clicking X on each one, so Firefox shuts
+	// down cleanly and writes its session. Closing only the main window (what
+	// taskkill does) just destroys one window and leaves the browser running.
 	const closed = closeAllWindows(pids);
 	if (!closed) {
 		console.log("no closable windows found -- left alone; " + version + " loads on your next start.");
@@ -372,6 +459,7 @@ if (!procs.length) {
 		process.exit(0);
 	}
 	console.log(`session restore: ${armSessionRestore()}`);
+	console.log(`   windows: ${restoreAllWindows(snap.state, closeStartedAt)}`);
 	if (!exe) {
 		console.log("Firefox closed, but firefox.exe was not found -- start it yourself.");
 		process.exit(0);

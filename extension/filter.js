@@ -248,6 +248,58 @@ const Filter = {
     return out;
   },
 
+  /* ---- host / owner ---- */
+
+  // Airbnb never fills passportData in search results (it's present but null),
+  // so the host's name only comes from the room page. There it sits in a
+  // PassportCardData block, with "Hosted by <name>" as a backstop.
+  // Verified live: scripts/recon_hostname.py.
+  hostFromHtml(html) {
+    const s = String(html || "");
+    const out = {};
+    let m = s.match(/"__typename"\s*:\s*"PassportCardData"\s*,\s*"name"\s*:\s*"([^"]{1,80})"/);
+    if (!m) m = s.match(/"name"\s*:\s*"([^"]{1,80})"\s*,\s*"userId"\s*:\s*"[^"]*"\s*,\s*"contextualUserId"/);
+    if (!m) m = s.match(/Hosted by ([^"<\\]{1,60})/);
+    if (m) out.name = m[1].trim();
+    const h = s.match(/"hostId"\s*:\s*"?(\d+)"?/);
+    if (h) out.hostId = h[1];
+    const t = s.match(/"name"\s*:\s*\{\s*"__typename"\s*:\s*"UGCText"\s*,\s*"localizedString"\s*:\s*"([^"]{1,120})"/);
+    if (t) out.listingName = t[1].trim();
+    else {
+      const ti = s.match(/<title[^>]*>([^<]{1,200})<\/title>/);
+      // "<listing name> - <property type> in <place> - Airbnb"
+      if (ti) { const cut = ti[1].split(" - ")[0].trim(); if (cut && !/log in/i.test(cut)) out.listingName = cut; }
+    }
+    return out.name || out.listingName ? out : null;
+  },
+
+  // Message the host about a listing WITHOUT knowing the thread id -- Airbnb
+  // resolves this to the existing conversation when there is one. Verified the
+  // route exists (auth-gated, not 404): scripts/recon_contact.py.
+  contactUrl(origin, listingId) {
+    return `${origin}/contact_host/${listingId}/send_message`;
+  },
+  threadUrl(origin, threadId) {
+    return `${origin}/guest/messages/${threadId}`;
+  },
+  // The listing a message thread is about. A thread page links the listing, and
+  // failing that names it in inline JSON.
+  listingIdFromThread(html) {
+    const s = String(html || "");
+    let m = s.match(/\/rooms\/(\d+)/);
+    if (!m) m = s.match(/"listing_?[iI]d"\s*:\s*"?(\d{6,})"?/);
+    return m ? m[1] : null;
+  },
+  // "/guest/messages/<threadId>" -> "<threadId>"
+  threadIdFromPath(pathname) {
+    const m = String(pathname || "").match(/\/guest\/messages\/(\d+)/);
+    return m ? m[1] : null;
+  },
+  roomIdFromPath(pathname) {
+    const m = String(pathname || "").match(/\/rooms\/(\d+)/);
+    return m ? m[1] : null;
+  },
+
   // A room page has no price, but it does carry the coordinate a probe needs.
   coordFromHtml(html) {
     const la = String(html).match(/"lat(?:itude)?"\s*:\s*(-?\d+\.\d+)/);

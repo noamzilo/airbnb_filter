@@ -8,8 +8,12 @@ the DOM as **text** (screenshots are too token-expensive). Read
   Airbnb, injects `extension/content.js` with a stubbed store, asserts
   panel / colouring / map-tagging behavior. Run after any `content.js` change.
 - **`node scripts/test-filter.js` / `test-reinject.js` / `test-html-rewrite.js` /
-  `test-price.js`** — fast pure-logic tests for `filter.js` (no browser):
-  archiving, re-injection, HTML blob rewriting, price normalisation.
+  `test-price.js` / `test-session-repair.js`** — fast pure-logic tests (no
+  browser): archiving, re-injection, HTML blob rewriting, price normalisation,
+  and the session repair that keeps every Firefox window across a restart.
+- **`python scripts/test_restart.py`** — drives real Firefox with three windows
+  and fails if the auto-restart loses any. Run after touching the `--restart`
+  path in `scripts/install_local.js` (see D38).
 - **`scripts/drive.py` / `recon_map.py`** — ad-hoc live DOM recon (dump markup,
   click pins, print JSON) when you need to see real structure.
 

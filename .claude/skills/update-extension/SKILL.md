@@ -54,19 +54,33 @@ Run all commands from the project root (`c:\Users\noams\src\airbnb_filter`).
    or isn't AMO-signed.
 
    A running Firefox keeps the old copy open, so the new version only goes live on
-   a restart — `--restart` does that **without losing tabs**: it posts `WM_CLOSE`
-   to **every** top-level Firefox window (never `/F`, so Firefox writes its
-   session), waits for exit, arms
-   `browser.sessionstore.resume_session_once` — the one-shot pref Firefox itself
-   uses when it restarts for an update — and reopens. Windows, tabs, scroll and
-   form state all come back. Verified end-to-end on a throwaway profile: 3 tabs in,
-   3 tabs out, add-on 0.1.6 → 0.1.7 in the same cycle; and with 2 windows open,
-   both close and the browser really exits (`scripts/test_restart.py`).
+   a restart — `--restart` does that **without losing windows or tabs**. Three
+   things have to be right, and each one cost a real window before it was:
 
-   It must be every window, not `taskkill /PID`: that reaches only the process's
-   *main* window, so on a multi-window Firefox it destroys one window and leaves
-   the browser running — the update never applies and a window just disappears.
-   That regression is what `test_restart.py` pins.
+   - **Wait for Firefox to persist its session first.** Firefox writes the session
+     on a timer (`browser.sessionstore.interval`, 15s). A window it has not written
+     yet cannot be restored by anything — measured at ~21s for a fresh window. The
+     script polls until the saved session lists as many windows as are on screen,
+     and warns instead of guessing if it never catches up.
+   - **Close every top-level window, not the process.** `taskkill /PID` reaches
+     only the *main* window, so a multi-window Firefox lost one window and stayed
+     running with the update unapplied.
+   - **Put back what Firefox files as "recently closed".** Closing windows one at a
+     time is not a quit: a window that closes while others are open goes into
+     `_closedWindows`, and restore only brings back `state.windows`. That is how a
+     3-window browser came back as 1. After shutdown the script promotes those
+     back, falling back to the pre-close snapshot if they are not there.
+
+   Then it arms `browser.sessionstore.resume_session_once` — the one-shot pref
+   Firefox itself uses when it restarts for an update — and reopens.
+
+   Tests, both of which must pass after touching any of this:
+   - `node scripts/test-session-repair.js` — fast, no browser. Covers every repair
+     branch, including the exact 3-windows-came-back-as-1 case.
+   - `python scripts/test_restart.py` — drives real Firefox with three windows and
+     fails if any window does not come back. Its pages must be **real** files:
+     Firefox does not track closed windows whose tabs are all `about:` pages, so an
+     `about:`-based harness silently tests nothing.
 
    It only ever closes Firefox parent processes, and if `--profile` was passed it
    closes only the instance running that profile. If Firefox has no window

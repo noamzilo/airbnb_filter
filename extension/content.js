@@ -25,6 +25,7 @@ async function loadState() {
   order = await Store.getOrder();
   images = await Store.getImages();
   prices = (Store.getPrices ? await Store.getPrices() : {}) || {};
+  hosts = (Store.getHosts ? await Store.getHosts() : {}) || {};
   const s = await Store.getSettings();
   showArchived = s.showArchived;
   showAllPlaces = !!s.showAllPlaces;
@@ -208,12 +209,41 @@ async function probePrice(id, ctx) {
   if (Object.keys(patch).length) await Store.setMediaBulk(patch);
 }
 
-// The room page has no price, but it does carry the coordinate a probe needs —
-// so the saved link alone is enough to price a listing we've never seen on a map.
+// The room page has no price, but it does carry the coordinate a probe needs,
+// plus the host's name and the real listing name — so the saved link alone is
+// enough to price and label a listing we've never seen on a map. One fetch,
+// cached: `listingPage` dedupes concurrent callers.
+const listingPageCache = {};
+function fetchListingPage(id) {
+  if (listingPageCache[id]) return listingPageCache[id];
+  listingPageCache[id] = (async () => {
+    const res = await fetch(linkFor(id), { credentials: "same-origin" });
+    if (!res.ok) return {};
+    const html = await res.text();
+    const out = { coord: Filter.coordFromHtml(html), host: Filter.hostFromHtml(html) };
+    if (out.host) await Store.setHost(id, out.host);
+    return out;
+  })().catch((e) => { console.warn("[Archiver] listing page fetch failed", id, e); return {}; });
+  return listingPageCache[id];
+}
 async function coordFromListingPage(id) {
-  const res = await fetch(linkFor(id), { credentials: "same-origin" });
-  if (!res.ok) return null;
-  return Filter.coordFromHtml(await res.text());
+  return (await fetchListingPage(id)).coord || null;
+}
+
+/* --- host name + "message the host" ------------------------------------ */
+let hosts = {};
+function hostOf(id) { return hosts[id] || null; }
+const hostAsked = new Set();
+function scheduleHostLookups(ids) {
+  if (typeof Filter === "undefined" || typeof fetch !== "function") return;
+  let n = 0;
+  for (const id of ids) {
+    if (n >= 4) break;                       // the room page is ~600KB; go easy
+    if (hostOf(id) || hostAsked.has(id)) continue;
+    hostAsked.add(id);
+    n++;
+    fetchListingPage(id);
+  }
 }
 
 // Prices for listings on the page we're already on: free, no probe needed.
@@ -706,11 +736,22 @@ function panelRow(id) {
 
   const sub = document.createElement("div"); sub.className = "archiver-row-sub"; sub.textContent = p.sub;
 
+  const hostRow = document.createElement("div"); hostRow.className = "archiver-row-host";
+  const hostName = document.createElement("span"); hostName.className = "archiver-host-name";
+  const chat = document.createElement("a");
+  chat.className = "archiver-host-chat";
+  chat.href = Filter.contactUrl(location.origin, id);
+  chat.target = "_blank"; chat.rel = "noreferrer";
+  chat.textContent = "💬 Message";
+  chat.title = "Open your conversation with this host";
+  hostRow.append(hostName, chat);
+  fillHost(hostRow, id);
+
   const note = document.createElement("textarea");
   note.className = "archiver-note"; note.placeholder = "Add a note…"; note.value = notes[id] || "";
   note.addEventListener("input", debounce(() => Store.setNote(id, note.value), 400));
 
-  meta.append(head, perDay, sub, note);
+  meta.append(head, perDay, sub, hostRow, note);
   row.append(media, meta);
   return row;
 }
@@ -730,6 +771,7 @@ function renderPanel() {
     updateHead(g);
     for (const row of list.querySelectorAll(".archiver-row")) updateRow(row);
     try { schedulePriceProbes([...g.shown, ...g.unplaced]); } catch (_) {}
+    try { scheduleHostLookups([...g.shown, ...g.unplaced]); } catch (_) {}
     return;
   }
 
@@ -759,13 +801,30 @@ function renderPanel() {
     list.appendChild(divider(`${g.hidden} more elsewhere on the map`));
   }
   list.scrollTop = scroll; // a re-render shouldn't jump you back to the top
-  // Whatever is on screen gets its price re-read from Airbnb.
+  // Whatever is on screen gets its price re-read from Airbnb, and its host
+  // looked up if we don't have one yet.
   try { schedulePriceProbes([...g.shown, ...g.unplaced]); } catch (e) { console.warn("[Archiver] probe scheduling", e); }
+  try { scheduleHostLookups([...g.shown, ...g.unplaced]); } catch (e) { console.warn("[Archiver] host lookup", e); }
 }
 function divider(text) {
   const d = document.createElement("div");
   d.className = "archiver-divider"; d.textContent = text;
   return d;
+}
+// The host name arrives asynchronously (one room-page fetch per listing), so the
+// row renders immediately and fills in when it lands.
+function fillHost(hostRow, id) {
+  const h = hostOf(id);
+  const nameEl = hostRow.querySelector(".archiver-host-name");
+  if (!nameEl) return;
+  if (h && h.name) {
+    nameEl.textContent = "Hosted by " + h.name;
+    nameEl.classList.remove("archiver-host-name--pending");
+    hostRow.title = h.listingName || "";
+  } else {
+    nameEl.textContent = "looking up host…";
+    nameEl.classList.add("archiver-host-name--pending");
+  }
 }
 function updateHead(g) {
   const count = panelEl && panelEl.querySelector(".archiver-panel-count");
@@ -801,6 +860,8 @@ function updateRow(row) {
   if (per) { per.textContent = p.perDay || ""; per.style.display = p.perDay ? "" : "none"; }
   const sub = row.querySelector(".archiver-row-sub");
   if (sub) sub.textContent = p.sub;
+  const hostRow = row.querySelector(".archiver-row-host");
+  if (hostRow) fillHost(hostRow, id);
 
   const btns = row.querySelectorAll(".archiver-rowbtn");
   if (btns.length >= 2) {
@@ -817,6 +878,63 @@ function updateRow(row) {
     if (handle) fresh.appendChild(handle);
     media.replaceWith(fresh);
   }
+}
+
+/* --- jump between a listing and the conversation about it ----------------
+   On a room page: a button into the chat with that host.
+   On a message thread: the apartment + host it's about, and a button to it.
+   Both read the host/listing name from the room page (Store.getHosts cache). */
+function bridgeBar() {
+  let bar = document.querySelector(".archiver-bridge");
+  if (bar) return bar;
+  bar = document.createElement("div");
+  bar.className = "archiver-bridge";
+  const text = document.createElement("div"); text.className = "archiver-bridge-text";
+  const title = document.createElement("div"); title.className = "archiver-bridge-title";
+  const subtitle = document.createElement("div"); subtitle.className = "archiver-bridge-sub";
+  text.append(title, subtitle);
+  const go = document.createElement("a");
+  go.className = "archiver-bridge-btn"; go.target = "_top"; go.rel = "noreferrer";
+  bar.append(text, go);
+  document.body.appendChild(bar);
+  return bar;
+}
+function fillBridge(id, mode) {
+  const bar = bridgeBar();
+  const h = hostOf(id) || {};
+  const snap = snapOf(id);
+  const name = h.listingName || snap.title || `Listing ${id}`;
+  bar.querySelector(".archiver-bridge-title").textContent = name;
+  bar.querySelector(".archiver-bridge-sub").textContent = h.name ? "Hosted by " + h.name : "looking up host…";
+  const go = bar.querySelector(".archiver-bridge-btn");
+  if (mode === "room") {
+    go.href = Filter.contactUrl(location.origin, id);
+    go.textContent = h.name ? `💬 Message ${h.name}` : "💬 Message the host";
+  } else {
+    go.href = `${location.origin}/rooms/${id}`;
+    go.textContent = "🏠 Open the apartment";
+  }
+}
+let bridgeId = null;
+function decorateBridge() {
+  if (typeof Filter === "undefined") return;
+  const roomId = Filter.roomIdFromPath(location.pathname);
+  const threadId = Filter.threadIdFromPath(location.pathname);
+  if (!roomId && !threadId) {
+    const bar = document.querySelector(".archiver-bridge");
+    if (bar) bar.remove();
+    bridgeId = null;
+    return;
+  }
+  // On a thread page the listing isn't in the URL — it's whatever room the
+  // conversation links to.
+  const id = roomId || Filter.listingIdFromThread(document.body ? document.body.innerHTML : "");
+  if (!id) return;
+  const mode = roomId ? "room" : "thread";
+  fillBridge(id, mode);
+  if (bridgeId === id) return;
+  bridgeId = id;
+  if (!hostOf(id)) fetchListingPage(id).then(() => fillBridge(id, mode));
 }
 
 /* ----------------------------- orchestration ----------------------------- */
@@ -842,6 +960,7 @@ function decorateAll() {
   try { colorMarkers(); } catch (e) { console.warn("[Archiver] colorMarkers", e); }
   try { positionPanel(); } catch (e) { console.warn("[Archiver] positionPanel", e); }
   try { syncPanelToMap(); } catch (e) { console.warn("[Archiver] syncPanelToMap", e); }
+  try { decorateBridge(); } catch (e) { console.warn("[Archiver] decorateBridge", e); }
 }
 const observer = new MutationObserver(debounce(decorateAll, 250));
 window.addEventListener("resize", debounce(positionPanel, 200));
