@@ -283,12 +283,16 @@ function positionPanel() {
   if (!map) { if (panelEl) panelEl.style.display = "none"; return false; }
   const r = map.getBoundingClientRect();
   if (!r.width || r.left < 40) { if (panelEl) panelEl.style.display = "none"; return false; }
+  // Cover the results column: from a bit above the map's top (to hide the strip
+  // of Airbnb cards that peeks there) down to the bottom of the map. Bounded so
+  // it never rides up over the header.
+  const top = Math.max(56, r.top - 96);
   ensurePanel();
   panelEl.style.display = "block";
-  panelEl.style.top = Math.max(0, r.top) + "px";
+  panelEl.style.top = top + "px";
   panelEl.style.left = "0px";
   panelEl.style.width = Math.round(r.left) + "px";
-  panelEl.style.height = Math.round(r.height) + "px";
+  panelEl.style.height = Math.round(r.top + r.height - top) + "px";
   return true;
 }
 function orderedIds() {
@@ -377,22 +381,11 @@ function renderPanel() {
   for (const id of ids) list.appendChild(panelRow(id));
 }
 
-// Hide Airbnb's own result cards (our panel replaces them). Only the map popup
-// card (a /rooms card over the map) is left alone.
-function hideSideList() {
-  const mapEl = mapElement(); if (!mapEl) return;
-  for (const anchor of document.querySelectorAll('a[href*="/rooms/"]')) {
-    const container = cardContainer(anchor);
-    if (!container || container.dataset.archiverHidden === "1") continue;
-    if (isOverMap(container, mapEl)) continue; // keep the map popup card
-    container.style.display = "none";
-    container.dataset.archiverHidden = "1";
-  }
-}
-
 /* ----------------------------- orchestration ----------------------------- */
+// NOTE: we do NOT hide Airbnb's own cards (walking up to a card container could
+// resolve to an ancestor that contains the map and blank the page). Instead the
+// opaque panel fully covers the results column (see positionPanel).
 function decorateAll() {
-  try { hideSideList(); } catch (e) { console.warn("[Archiver] hideSideList", e); }
   try { decorateMapCards(); } catch (e) { console.warn("[Archiver] decorateMapCards", e); }
   try { hideArchivedMarkers(); } catch (e) { console.warn("[Archiver] hideArchivedMarkers", e); }
   try { colorMarkers(); } catch (e) { console.warn("[Archiver] colorMarkers", e); }
