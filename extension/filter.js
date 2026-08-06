@@ -69,6 +69,17 @@ const Filter = {
     return jsonText.replace(/</g, "\\u003c");
   },
 
+  // Cheap structural check that a rewritten document is still the same document.
+  // We only ever swap the contents of the deferred-state <script> blobs, so the
+  // tag skeleton must be untouched: same number of script opens and closes, and
+  // the same tail. Any drift means we corrupted the markup and must not ship it.
+  sameHtmlShape(before, after) {
+    const count = (s, re) => (s.match(re) || []).length;
+    if (count(before, /<script\b/gi) !== count(after, /<script\b/gi)) return false;
+    if (count(before, /<\/script>/gi) !== count(after, /<\/script>/gi)) return false;
+    return before.slice(-64) === after.slice(-64);
+  },
+
   /* ---- always-show-starred: cache + re-injection ---- */
 
   // Photo URLs for a listing (for the panel's carousel). Airbnb hands us the

@@ -45,4 +45,24 @@ let present = false;
 console.log("victim still present after rewrite:", present);
 // sanity: does output still contain other critical scripts / same script count?
 console.log("script tags before/after:", (html.match(/<script/g)||[]).length, (out.match(/<script/g)||[]).length);
+
+// The shape guard. A malformed document does not fail loudly in Firefox: the
+// parser loses sync, swallows markup to the next </script>, and paints a later
+// application/json payload on screen as class-name soup. Rewrites must keep the
+// tag skeleton identical, and a rewrite that doesn't must be rejected outright.
+if (!Filter.sameHtmlShape(html, out)) { ok = false; console.log("SHAPE GUARD: real rewrite failed its own check"); }
+else console.log("shape guard: real rewrite passes");
+
+const corrupt = [
+  ["script tag destroyed",   html.replace('<script id="aphrodite-classes"', '<scrpt id="aphrodite-classes"')],
+  ["unbalanced </script>",   html.replace("</script>", "")],
+  ["truncated document",     html.slice(0, Math.floor(html.length * 0.6))],
+  ["breakout in a blob",     html.replace(/(<script id="data-deferred-state-0"[^>]*>)/, "$1</script><b>x</b>")],
+];
+for (const [name, bad] of corrupt) {
+  if (Filter.sameHtmlShape(html, bad)) { ok = false; console.log(`SHAPE GUARD MISSED: ${name}`); }
+  else console.log(`shape guard catches: ${name}`);
+}
+
 console.log(ok ? "\nHTML REWRITE OK" : "\nHTML REWRITE CORRUPTS BLOB");
+process.exit(ok ? 0 : 1);

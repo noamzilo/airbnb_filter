@@ -124,13 +124,22 @@ function rewriteJson(text) {
 }
 
 function rewriteHtml(text) {
-  return text.replace(
+  const out = text.replace(
     /(<script id="data-deferred-state-\d+"[^>]*>)([\s\S]*?)(<\/script>)/g,
     (full, open, json, close) => {
       try { return open + Filter.escapeForScript(processJson(json)) + close; }
       catch (e) { console.warn("[Archiver] HTML blob process failed, passing through", e); return full; }
     }
   );
+  // A document we hand back malformed doesn't fail loudly — the parser silently
+  // loses sync, swallows the page up to the next </script>, and paints the raw
+  // JSON of a later <script type="application/json"> as class-name soup. Only
+  // ship a rewrite that still looks like the document we were given.
+  if (!Filter.sameHtmlShape(text, out)) {
+    console.warn("[Archiver] rewritten document changed shape, passing original through");
+    return text;
+  }
+  return out;
 }
 
 browser.webRequest.onBeforeRequest.addListener(
@@ -151,14 +160,18 @@ browser.webRequest.onBeforeRequest.addListener(
     filter.ondata = (event) => chunks.push(new Uint8Array(event.data));
     filter.onstop = () => {
       const buf = concatChunks(chunks);
+      // Decide on the bytes BEFORE writing any. Writing inside the try meant a
+      // throw mid-write fell into the catch and wrote the body a second time,
+      // appending a whole duplicate document to a partial one.
+      let bytes = buf;
       try {
         const text = new TextDecoder("utf-8").decode(buf);
         const out = isDoc ? rewriteHtml(text) : rewriteJson(text);
-        filter.write(new TextEncoder().encode(out));
+        if (out !== text) bytes = new TextEncoder().encode(out);
       } catch (e) {
         console.warn("[Archiver] rewrite failed, passing original through", e);
-        filter.write(buf);
       }
+      try { filter.write(bytes); } catch (e) { console.warn("[Archiver] write failed", e); }
       filter.close();
     };
     filter.onerror = () => console.warn("[Archiver] stream filter error:", filter.error);
