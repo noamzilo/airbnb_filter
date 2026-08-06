@@ -47,6 +47,20 @@ const Store = {
   async getImages() { return (await browser.storage.local.get("images")).images || {}; },
   async getPrices() { return (await browser.storage.local.get("prices")).prices || {}; },
 
+  // listingId -> threadId, learned whenever a message thread is open. Airbnb's
+  // /contact_host/<id>/send_message route opens a NEW-message compose window,
+  // not the existing conversation, so the thread id is the only way to link
+  // straight into a chat that already exists.
+  async getThreads() { return (await browser.storage.local.get("threads")).threads || {}; },
+  async setThread(listingId, threadId) {
+    if (!listingId || !threadId) return false;
+    const threads = await Store.getThreads();
+    if (threads[listingId] === threadId) return false;
+    threads[listingId] = threadId;
+    await browser.storage.local.set({ threads });
+    return true;
+  },
+
   // id -> { name, hostId, listingName } read off the room page. Hosts and
   // listing names barely change, so this is written once and reused.
   async getHosts() { return (await browser.storage.local.get("hosts")).hosts || {}; },

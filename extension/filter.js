@@ -282,13 +282,23 @@ const Filter = {
   threadUrl(origin, threadId) {
     return `${origin}/guest/messages/${threadId}`;
   },
-  // The listing a message thread is about. A thread page links the listing, and
-  // failing that names it in inline JSON.
+  // The listing a message thread is about. NOT simply the first /rooms/ link: a
+  // thread page also renders the inbox sidebar, and every other conversation in
+  // it links its own listing. The open thread's listing is the one that recurs
+  // (header, card, CTA), so take the most frequent and break ties by order.
   listingIdFromThread(html) {
     const s = String(html || "");
-    let m = s.match(/\/rooms\/(\d+)/);
-    if (!m) m = s.match(/"listing_?[iI]d"\s*:\s*"?(\d{6,})"?/);
-    return m ? m[1] : null;
+    const counts = new Map();
+    const re = /\/rooms\/(\d+)/g;
+    let m;
+    while ((m = re.exec(s))) counts.set(m[1], (counts.get(m[1]) || 0) + 1);
+    if (counts.size) {
+      let best = null, bestN = -1;
+      for (const [id, n] of counts) if (n > bestN) { best = id; bestN = n; }
+      return best;
+    }
+    const j = s.match(/"listing_?[iI]d"\s*:\s*"?(\d{6,})"?/);
+    return j ? j[1] : null;
   },
   // "/guest/messages/<threadId>" -> "<threadId>"
   threadIdFromPath(pathname) {

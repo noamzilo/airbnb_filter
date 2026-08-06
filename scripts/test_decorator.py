@@ -22,7 +22,7 @@ URL = ("https://www.airbnb.com/s/Asuncion--Paraguay/homes?adults=1"
 STUB = r"""
 window.__cats={starred:{},maybe:{},archived:{}};window.__settings={showArchived:false};
 window.__tagcoords={};window.__notes={};window.__order=[];window.__ls=[];
-window.__images={};window.__prices={};window.__hosts={};
+window.__images={};window.__prices={};window.__hosts={};window.__threads={};
 const fire=(ch)=>window.__ls.forEach(f=>{try{f(ch||{})}catch(e){}});
 const C=["starred","maybe","archived"];
 window.browser={storage:{onChanged:{addListener:f=>window.__ls.push(f)}}};
@@ -32,6 +32,8 @@ window.Store={
   setCategory:async(i,s,c)=>{for(const k of C)delete window.__cats[k][i];if(c)window.__cats[c][i]={...(s||{}),ts:Date.now?1:1};fire({starred:{}});},
   getStarredData:async()=>({}),setStarredData:async()=>{},getTagCoords:async()=>window.__tagcoords||{},
   getHosts:async()=>window.__hosts||{},
+  getThreads:async()=>window.__threads||{},
+  setThread:async(l,t)=>{window.__threads=window.__threads||{};if(window.__threads[l]===t)return false;window.__threads[l]=t;fire({threads:{}});return true;},
   setHost:async(i,info)=>{if(!info)return false;window.__hosts=window.__hosts||{};window.__hosts[i]={...(window.__hosts[i]||{}),...info};fire({hosts:{}});return true;},
   getImages:async()=>window.__images||{},getPrices:async()=>window.__prices||{},
   setMedia:async(i,im,p,c)=>Store.setMediaBulk({[i]:{images:im,price:p,coord:c}}),
@@ -501,9 +503,26 @@ try:
                 "const r=document.querySelector('.archiver-row-host'); return r?r.innerText:''"),
                 d.execute_script("const r=document.querySelector('.archiver-row-host'); return r?r.innerText:''"))
             check("real listing name captured too", bool(got.get("listingName")), str(got))
+        # With no conversation on record yet, the link falls back to Airbnb's
+        # compose form -- and says so, because that is NOT the existing chat.
         chat = d.execute_script("const a=document.querySelector('.archiver-host-chat'); return a?a.getAttribute('href'):''")
-        check("row links to the conversation with the host",
+        check("with no thread known, falls back to the compose form",
               chat.endswith(f"/contact_host/{real}/send_message"), repr(chat))
+        check("fallback link is visibly marked as 'not your chat'", d.execute_script(
+            "const a=document.querySelector('.archiver-host-chat');"
+            "return a.classList.contains('archiver-host-chat--new') && a.textContent.includes('Message')"))
+
+        # Once the thread is known, the button must go to the REAL conversation.
+        d.execute_script("""
+          window.__threads={[arguments[0]]:'2592958621'};
+          window.__ls.forEach(f=>f({threads:{}}));
+        """, real); time.sleep(0.6)
+        chat = d.execute_script("const a=document.querySelector('.archiver-host-chat'); return a?a.getAttribute('href'):''")
+        check("known thread links straight into the chat",
+              chat.endswith("/guest/messages/2592958621"), repr(chat))
+        check("and is labelled as an existing chat", d.execute_script(
+            "const a=document.querySelector('.archiver-host-chat');"
+            "return !a.classList.contains('archiver-host-chat--new') && a.textContent.includes('Chat')"))
 
     print("\n" + ("ALL PASS" if all(results) else "SOME FAILED"), flush=True)
 finally:

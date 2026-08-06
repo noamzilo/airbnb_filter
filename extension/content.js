@@ -26,6 +26,7 @@ async function loadState() {
   images = await Store.getImages();
   prices = (Store.getPrices ? await Store.getPrices() : {}) || {};
   hosts = (Store.getHosts ? await Store.getHosts() : {}) || {};
+  threads = (Store.getThreads ? await Store.getThreads() : {}) || {};
   const s = await Store.getSettings();
   showArchived = s.showArchived;
   showAllPlaces = !!s.showAllPlaces;
@@ -232,7 +233,16 @@ async function coordFromListingPage(id) {
 
 /* --- host name + "message the host" ------------------------------------ */
 let hosts = {};
+let threads = {};
 function hostOf(id) { return hosts[id] || null; }
+// The existing conversation if we know it, otherwise Airbnb's compose window.
+// /contact_host/<id>/send_message does NOT resolve to an existing thread — it
+// opens a blank new-message form — so a known thread id always wins.
+function chatUrlFor(id) {
+  const t = threads[id];
+  return t ? Filter.threadUrl(location.origin, t) : Filter.contactUrl(location.origin, id);
+}
+function hasThread(id) { return !!threads[id]; }
 const hostAsked = new Set();
 function scheduleHostLookups(ids) {
   if (typeof Filter === "undefined" || typeof fetch !== "function") return;
@@ -740,10 +750,8 @@ function panelRow(id) {
   const hostName = document.createElement("span"); hostName.className = "archiver-host-name";
   const chat = document.createElement("a");
   chat.className = "archiver-host-chat";
-  chat.href = Filter.contactUrl(location.origin, id);
   chat.target = "_blank"; chat.rel = "noreferrer";
-  chat.textContent = "💬 Message";
-  chat.title = "Open your conversation with this host";
+  setChatLink(chat, id);
   hostRow.append(hostName, chat);
   fillHost(hostRow, id);
 
@@ -811,6 +819,15 @@ function divider(text) {
   d.className = "archiver-divider"; d.textContent = text;
   return d;
 }
+function setChatLink(a, id) {
+  a.href = chatUrlFor(id);
+  const known = hasThread(id);
+  a.textContent = known ? "💬 Chat" : "💬 Message";
+  a.classList.toggle("archiver-host-chat--new", !known);
+  a.title = known
+    ? "Open your existing conversation about this listing"
+    : "No conversation recorded yet — this opens Airbnb's new-message form. Open the chat once and this will link straight to it.";
+}
 // The host name arrives asynchronously (one room-page fetch per listing), so the
 // row renders immediately and fills in when it lands.
 function fillHost(hostRow, id) {
@@ -862,6 +879,8 @@ function updateRow(row) {
   if (sub) sub.textContent = p.sub;
   const hostRow = row.querySelector(".archiver-row-host");
   if (hostRow) fillHost(hostRow, id);
+  const chat = row.querySelector(".archiver-host-chat");
+  if (chat) setChatLink(chat, id);
 
   const btns = row.querySelectorAll(".archiver-rowbtn");
   if (btns.length >= 2) {
@@ -908,8 +927,10 @@ function fillBridge(id, mode) {
   bar.querySelector(".archiver-bridge-sub").textContent = h.name ? "Hosted by " + h.name : "looking up host…";
   const go = bar.querySelector(".archiver-bridge-btn");
   if (mode === "room") {
-    go.href = Filter.contactUrl(location.origin, id);
-    go.textContent = h.name ? `💬 Message ${h.name}` : "💬 Message the host";
+    go.href = chatUrlFor(id);
+    go.textContent = hasThread(id)
+      ? (h.name ? `💬 Chat with ${h.name}` : "💬 Open the chat")
+      : (h.name ? `💬 Message ${h.name}` : "💬 Message the host");
   } else {
     go.href = `${location.origin}/rooms/${id}`;
     go.textContent = "🏠 Open the apartment";
@@ -931,6 +952,12 @@ function decorateBridge() {
   const id = roomId || Filter.listingIdFromThread(document.body ? document.body.innerHTML : "");
   if (!id) return;
   const mode = roomId ? "room" : "thread";
+  // Being on a thread page is the one moment we learn which conversation belongs
+  // to which listing. Remember it so the panel can link straight here later.
+  if (threadId && threads[id] !== threadId) {
+    threads[id] = threadId;
+    if (Store.setThread) Store.setThread(id, threadId).catch(() => {});
+  }
   fillBridge(id, mode);
   if (bridgeId === id) return;
   bridgeId = id;

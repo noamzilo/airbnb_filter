@@ -274,6 +274,9 @@
   white-space: nowrap;
 }
 .archiver-host-chat:hover { background: #b8184c; }
+/* No conversation recorded yet -> this opens Airbnb's compose form, not a chat. */
+.archiver-host-chat--new { background: #6a6a6a; }
+.archiver-host-chat--new:hover { background: #555; }
 
 .archiver-row-ctrls { flex: none; display: flex; gap: 4px; }
 .archiver-rowbtn {

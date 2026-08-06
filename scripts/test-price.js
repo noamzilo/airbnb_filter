@@ -155,6 +155,18 @@ check("thread url", Filter.threadUrl("https://www.airbnb.com", "999") === "https
 check("listing id read out of a thread page",
   Filter.listingIdFromThread('<a href="/rooms/1239210296375530793?x=1">Cosy</a>') === "1239210296375530793");
 check("thread page with no listing", Filter.listingIdFromThread("<div>hi</div>") === null);
+// A thread page also renders the inbox sidebar: every OTHER conversation links
+// its own listing once, while the open thread's listing recurs.
+check("open thread wins over sidebar conversations",
+  Filter.listingIdFromThread(
+    '<aside><a href="/rooms/111">other chat</a><a href="/rooms/222">other chat</a></aside>' +
+    '<main><a href="/rooms/999">the listing</a><img src="/rooms/999/photo"><a href="/rooms/999">book</a></main>'
+  ) === "999",
+  Filter.listingIdFromThread('<aside><a href="/rooms/111">x</a></aside><main><a href="/rooms/999">y</a><a href="/rooms/999">z</a></main>'));
+check("ties fall back to document order",
+  Filter.listingIdFromThread('<a href="/rooms/111">a</a><a href="/rooms/222">b</a>') === "111");
+check("falls back to inline json when nothing is linked",
+  Filter.listingIdFromThread('{"listingId":"827677023435973204"}') === "827677023435973204");
 
 /* ---- against the real recon blob ---- */
 const statePath = path.join(__dirname, "..", "state.json");

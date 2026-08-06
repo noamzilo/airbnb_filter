@@ -55,6 +55,40 @@ try:
             "return document.querySelector('.archiver-bridge-btn').textContent"),
             d.execute_script("return document.querySelector('.archiver-bridge-btn').textContent"))
 
+    # --- learning listingId -> threadId from a chat page ---------------------
+    # /guest/messages needs a login, so simulate the thread page: same URL shape,
+    # same "the thread links its listing" DOM. The real page was confirmed working
+    # by the user (the "Open the apartment" button worked from a live chat).
+    THREAD = "2592958621"
+    LISTING = "827677023435973204"
+    d.get("https://www.airbnb.com/")
+    time.sleep(2)
+    d.execute_script("const s=document.createElement('style');s.textContent=arguments[0];document.head.appendChild(s);", STYLES)
+    d.execute_script(STUB); d.execute_script(FILTER + "\nwindow.Filter = Filter;")
+    # Simulate the real shape: an inbox sidebar of OTHER conversations (each
+    # linking its own listing once) plus the open thread's listing, which recurs.
+    d.execute_script("""
+      history.replaceState(null, '', '/guest/messages/' + arguments[0]);
+      document.body.innerHTML =
+        '<aside><a href="/rooms/111111111">another chat</a>' +
+        '<a href="/rooms/222222222">yet another chat</a></aside>' +
+        '<main><a href="/rooms/' + arguments[1] + '">the listing</a>' +
+        '<a href="/rooms/' + arguments[1] + '">book it</a></main>';
+    """, THREAD, LISTING)
+    d.execute_script(CONTENT)
+    time.sleep(2.5)
+
+    check("bridge bar shows on a thread page", d.execute_script("return !!document.querySelector('.archiver-bridge')"))
+    href = d.execute_script("const a=document.querySelector('.archiver-bridge-btn'); return a?a.getAttribute('href'):''")
+    check("thread page buttons through to the apartment", href.endswith(f"/rooms/{LISTING}"), repr(href))
+    learned = d.execute_script("return window.__threads || {}")
+    check("visiting a chat records listing -> thread", learned.get(LISTING) == THREAD, str(learned))
+
+    # ...and that mapping is what the panel then links to.
+    check("the learned mapping produces the real chat url", d.execute_script(
+        "return Filter.threadUrl(location.origin, (window.__threads||{})[arguments[0]])", LISTING
+    ).endswith(f"/guest/messages/{THREAD}"))
+
     # The bar is for room/thread pages only -- it must not appear on search.
     d.get("https://www.airbnb.com/s/Asuncion--Paraguay/homes?adults=1")
     for _ in range(40):
