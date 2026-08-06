@@ -116,6 +116,8 @@ try:
     check("per-night shown on its own line", "$40" in per and "night" in per, repr(per))
     check("price headline links to the room", d.execute_script(
         "const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A'); return r.querySelector('a.archiver-row-price').href.includes('/rooms/')"))
+    check("row has a Go-to-property button", d.execute_script(
+        "const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A'); const p=r&&r.querySelector('a.archiver-host-prop'); return !!p && /\\/rooms\\//.test(p.href);"))
 
     # --- carousel actually cycles -------------------------------------------
     d.execute_script("""

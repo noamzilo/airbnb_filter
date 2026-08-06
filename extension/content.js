@@ -748,11 +748,16 @@ function panelRow(id) {
 
   const hostRow = document.createElement("div"); hostRow.className = "archiver-row-host";
   const hostName = document.createElement("span"); hostName.className = "archiver-host-name";
+  const prop = document.createElement("a");
+  prop.className = "archiver-host-prop";
+  prop.target = "_blank"; prop.rel = "noreferrer";
+  prop.href = snap.url || `https://www.airbnb.com/rooms/${id}`;
+  prop.textContent = "🏠 Property"; prop.title = "Open this listing on Airbnb";
   const chat = document.createElement("a");
   chat.className = "archiver-host-chat";
   chat.target = "_blank"; chat.rel = "noreferrer";
   setChatLink(chat, id);
-  hostRow.append(hostName, chat);
+  hostRow.append(hostName, prop, chat);
   fillHost(hostRow, id);
 
   const note = document.createElement("textarea");
@@ -911,7 +916,12 @@ function bridgeBar() {
   const text = document.createElement("div"); text.className = "archiver-bridge-text";
   const title = document.createElement("div"); title.className = "archiver-bridge-title";
   const subtitle = document.createElement("div"); subtitle.className = "archiver-bridge-sub";
-  text.append(title, subtitle);
+  const note = document.createElement("textarea");
+  note.className = "archiver-bridge-note"; note.placeholder = "Your note about this place…"; note.rows = 2;
+  // Your comment for this listing, editable right here in the chat window; saves
+  // to the same place the panel reads (bridgeNoteId tracks the current listing).
+  note.addEventListener("input", debounce(() => { if (bridgeNoteId) Store.setNote(bridgeNoteId, note.value); }, 400));
+  text.append(title, subtitle, note);
   const go = document.createElement("a");
   go.className = "archiver-bridge-btn"; go.target = "_top"; go.rel = "noreferrer";
   bar.append(text, go);
@@ -925,6 +935,13 @@ function fillBridge(id, mode) {
   const name = h.listingName || snap.title || `Listing ${id}`;
   bar.querySelector(".archiver-bridge-title").textContent = name;
   bar.querySelector(".archiver-bridge-sub").textContent = h.name ? "Hosted by " + h.name : "looking up host…";
+  const noteEl = bar.querySelector(".archiver-bridge-note");
+  if (noteEl) {
+    // Set the value when the listing changes, or to reflect an external edit —
+    // but never yank text out from under active typing here.
+    if (bridgeNoteId !== id) { bridgeNoteId = id; noteEl.value = notes[id] || ""; }
+    else if (document.activeElement !== noteEl) { noteEl.value = notes[id] || ""; }
+  }
   const go = bar.querySelector(".archiver-bridge-btn");
   if (mode === "room") {
     go.href = chatUrlFor(id);
@@ -937,6 +954,7 @@ function fillBridge(id, mode) {
   }
 }
 let bridgeId = null;
+let bridgeNoteId = null;
 function decorateBridge() {
   if (typeof Filter === "undefined") return;
   const roomId = Filter.roomIdFromPath(location.pathname);
