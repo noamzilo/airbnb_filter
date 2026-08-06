@@ -14,10 +14,10 @@ Run all commands from the project root (`c:\Users\noams\src\airbnb_filter`).
 
 ## Steps
 
-0. **Consent gate (see CLAUDE.md).** Signing UPLOADS the add-on to Mozilla/AMO
-   (even unlisted). Only proceed if the user explicitly asked to sign/ship/submit
-   in this request. If they didn't, stop and confirm first — or offer a no-upload
-   path (`npm run dev`, `npm run build`, or Firefox Developer Edition).
+0. **Channel guard (see CLAUDE.md).** Sign **unlisted** only (`npm run sign`) —
+   that's private/self-distribution and fine. NEVER use the public/listed channel
+   (`sign:listed` / `--channel=listed`) unless the user explicitly asks to publish
+   publicly.
 
 1. **Preflight.** Confirm `amo.env` exists (it's gitignored and holds
    `WEB_EXT_API_KEY` / `WEB_EXT_API_SECRET`). If it's missing, stop and ask the

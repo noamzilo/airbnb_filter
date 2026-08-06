@@ -73,11 +73,12 @@ function processJson(text) {
   Filter.collectSeen(root, seen);
   persistFromSeen();
   const removed = showArchived ? 0 : Filter.filterNode(root, archivedSet);
-  const injected = Filter.injectStarredMap(root, pickObjs(starredSet)); // starred: map pins only
+  // Map re-injection DISABLED: splicing cached GraphQL objects into a live
+  // response crashes Airbnb's client (blank page). The panel already shows all
+  // starred/maybe from snapshots, so this was redundant. Colouring + forceFullPins
+  // still make starred pins blue/full whenever Airbnb returns them.
   const fullPins = Filter.forceFullPins(root, starredSet);
-  if (removed || injected || fullPins) {
-    console.log(`[Archiver] removed ${removed}, injected ${injected}, fullPins ${fullPins}`);
-  }
+  if (removed || fullPins) console.log(`[Archiver] removed ${removed}, fullPins ${fullPins}`);
   return JSON.stringify(root);
 }
 

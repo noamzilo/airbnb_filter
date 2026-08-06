@@ -154,7 +154,7 @@
 .archiver-row.dragging { opacity: 0.5; }
 
 /* Big image / carousel — the prominent top half of the card. */
-.archiver-carousel { position: relative; width: 100%; height: 150px; background: #e9e9e9; }
+.archiver-carousel { position: relative; width: 100%; height: 120px; background: #e9e9e9; }
 .archiver-carousel-img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .archiver-cnav {
   position: absolute; top: 50%; transform: translateY(-50%);
