@@ -420,10 +420,11 @@ function positionPanel() {
   // of Airbnb cards that peeks there) down to the bottom of the map. Bounded so
   // it never rides up over the header.
   const top = Math.max(56, r.top - 96);
-  // Clamp the bottom to the viewport. Airbnb's map container can be far taller
-  // than the window; sizing the panel to it pushes the list off-screen, where it
-  // gets clipped instead of scrolling.
-  const bottom = Math.min(r.top + r.height, window.innerHeight);
+  // Always run to the bottom of the window. Sizing to the map's own box breaks
+  // both ways: a map taller than the window pushed the list off-screen (it got
+  // clipped instead of scrolling), and a map SHORTER than the window left
+  // Airbnb's own two-column cards showing underneath the panel.
+  const bottom = window.innerHeight;
   ensurePanel();
   // Must stay "flex" — an inline display:block here beats the stylesheet, the
   // list stops being a flex item, and it grows past the panel instead of scrolling.
@@ -606,31 +607,41 @@ function priceText(id) {
   }
   if (price && price.monthly != null) {
     const bits = [];
-    if (price.nightly != null) bits.push(fmtMoney(price.symbol, price.nightly) + "/night");
     if (price.basis === "monthly") bits.push("Airbnb monthly rate");
     if (price.total != null && price.nights) bits.push(fmtMoney(price.symbol, price.total) + " for " + price.nights + " nights");
     if (price.original != null && price.original > price.monthly) bits.push("was " + fmtMoney(price.symbol, price.original));
     return {
-      head: fmtMoney(price.symbol, price.monthly), unit: "/ 30 nights", sub: bits.join("  ·  "),
+      head: fmtMoney(price.symbol, price.monthly),
+      unit: "/ 30 nights",
+      perDay: price.nightly != null ? fmtMoney(price.symbol, price.nightly) + " / night" : "",
+      sub: bits.join("  ·  "),
       stale: price.ctx !== currentCtx(),   // quoted for different dates; a probe is on the way
     };
   }
   const raw = snapOf(id).price || "";
-  return { head: raw || "—", unit: "", sub: raw ? "" : "checking price…", stale: true };
+  return { head: raw || "—", unit: "", perDay: "", sub: raw ? "" : "checking price…", stale: true };
 }
 
-function buildCarousel(urls) {
+// Which photo each listing is showing. A re-render (a price landing, a note
+// saving) rebuilds the rows, and without this every carousel snapped back to
+// photo 1 — which looked like the carousel jumping backwards on its own.
+const carouselAt = {};
+
+function buildCarousel(urls, id) {
   const wrap = document.createElement("div"); wrap.className = "archiver-media";
+  wrap.dataset.urls = urls.length;
   const img = document.createElement("img");
   img.className = "archiver-media-img"; img.alt = ""; img.loading = "lazy"; img.draggable = false;
   wrap.appendChild(img);
   if (!urls.length) { wrap.classList.add("archiver-media--empty"); return wrap; }
-  let i = 0; img.src = urls[0];
+  let i = Math.min(Math.max(carouselAt[id] | 0, 0), urls.length - 1);
+  img.src = urls[i];
   if (urls.length < 2) return wrap;
 
-  const count = document.createElement("div"); count.className = "archiver-media-count"; count.textContent = "1/" + urls.length;
+  const count = document.createElement("div"); count.className = "archiver-media-count"; count.textContent = (i + 1) + "/" + urls.length;
   const show = (n) => {
     i = (n + urls.length) % urls.length;
+    carouselAt[id] = i;
     img.src = urls[i];
     count.textContent = (i + 1) + "/" + urls.length;
     new Image().src = urls[(i + 1) % urls.length]; // prefetch the next one
@@ -654,7 +665,7 @@ function panelRow(id) {
   row.addEventListener("mouseenter", () => highlightMarker(id, true));
   row.addEventListener("mouseleave", () => highlightMarker(id, false));
 
-  const media = buildCarousel(mediaOf(id).imgs);
+  const media = buildCarousel(mediaOf(id).imgs, id);
   const handle = document.createElement("div");
   handle.className = "archiver-handle"; handle.textContent = "⠿"; handle.title = "Drag to reorder";
   attachDrag(handle, row);
@@ -689,13 +700,17 @@ function panelRow(id) {
   ctrls.append(mk("★", cat === "starred", "starred", "Star"), mk("?", cat === "maybe", "maybe", "Maybe"), mk("🗑", false, "archived", "Archive"));
   head.append(a, ctrls);
 
+  const perDay = document.createElement("div");
+  perDay.className = "archiver-row-perday"; perDay.textContent = p.perDay || "";
+  if (!p.perDay) perDay.style.display = "none";
+
   const sub = document.createElement("div"); sub.className = "archiver-row-sub"; sub.textContent = p.sub;
 
   const note = document.createElement("textarea");
   note.className = "archiver-note"; note.placeholder = "Add a note…"; note.value = notes[id] || "";
   note.addEventListener("input", debounce(() => Store.setNote(id, note.value), 400));
 
-  meta.append(head, sub, note);
+  meta.append(head, perDay, sub, note);
   row.append(media, meta);
   return row;
 }
@@ -705,23 +720,25 @@ function renderPanel() {
   positionPanel();
   const list = panelEl.querySelector(".archiver-panel-list");
   if (!list) return;
+  const g = panelGroups();
+  const sig = groupSig(g);
+
+  // Same listings in the same order? Then a price landing (or a category swap)
+  // must NOT rebuild the DOM — that resets every carousel and steals focus from
+  // a note you're typing in. Patch the rows that changed instead.
+  if (sig === lastSig && list.querySelector(".archiver-row")) {
+    updateHead(g);
+    for (const row of list.querySelectorAll(".archiver-row")) updateRow(row);
+    try { schedulePriceProbes([...g.shown, ...g.unplaced]); } catch (_) {}
+    return;
+  }
+
   highlightMarker(null, false);
   const scroll = list.scrollTop;
   list.textContent = "";
+  lastSig = sig;
 
-  const g = panelGroups();
-  lastSig = groupSig(g);
-
-  const count = panelEl.querySelector(".archiver-panel-count");
-  const scope = panelEl.querySelector(".archiver-scope");
-  if (count) count.textContent = g.filtered ? `${g.shown.length} of ${g.total} on this map` : `${g.total} listing${g.total === 1 ? "" : "s"}`;
-  if (scope) {
-    scope.textContent = showAllPlaces ? "On this map" : "Show all";
-    scope.title = showAllPlaces
-      ? "Only show listings inside the current map view"
-      : `Show all ${g.total} listings, including other cities`;
-    scope.classList.toggle("on", showAllPlaces);
-  }
+  updateHead(g);
 
   if (!g.total) {
     const e = document.createElement("div"); e.className = "archiver-panel-empty";
@@ -749,6 +766,57 @@ function divider(text) {
   const d = document.createElement("div");
   d.className = "archiver-divider"; d.textContent = text;
   return d;
+}
+function updateHead(g) {
+  const count = panelEl && panelEl.querySelector(".archiver-panel-count");
+  const scope = panelEl && panelEl.querySelector(".archiver-scope");
+  if (count) count.textContent = g.filtered ? `${g.shown.length} of ${g.total} on this map` : `${g.total} listing${g.total === 1 ? "" : "s"}`;
+  if (scope) {
+    scope.textContent = showAllPlaces ? "On this map" : "Show all";
+    scope.title = showAllPlaces
+      ? "Only show listings inside the current map view"
+      : `Show all ${g.total} listings, including other cities`;
+    scope.classList.toggle("on", showAllPlaces);
+  }
+}
+// Refresh a row's live bits without touching the DOM the user is interacting
+// with (carousel position, note caret).
+function updateRow(row) {
+  const id = row.dataset.id;
+  if (!id) return;
+  const cat = catOf(id);
+  row.className = "archiver-row archiver-row--" + cat + (row.classList.contains("dragging") ? " dragging" : "");
+
+  const p = priceText(id);
+  const a = row.querySelector(".archiver-row-price");
+  if (a) {
+    a.firstChild && a.firstChild.nodeType === 3 ? (a.firstChild.nodeValue = p.head) : (a.textContent = p.head);
+    a.classList.toggle("archiver-row-price--muted", !!p.muted);
+    a.classList.toggle("archiver-row-price--stale", !!p.stale);
+    let u = a.querySelector(".archiver-row-unit");
+    if (p.unit && !u) { u = document.createElement("span"); u.className = "archiver-row-unit"; a.appendChild(u); }
+    if (u) { u.textContent = p.unit; u.style.display = p.unit ? "" : "none"; }
+  }
+  const per = row.querySelector(".archiver-row-perday");
+  if (per) { per.textContent = p.perDay || ""; per.style.display = p.perDay ? "" : "none"; }
+  const sub = row.querySelector(".archiver-row-sub");
+  if (sub) sub.textContent = p.sub;
+
+  const btns = row.querySelectorAll(".archiver-rowbtn");
+  if (btns.length >= 2) {
+    btns[0].classList.toggle("on", cat === "starred");
+    btns[1].classList.toggle("on", cat === "maybe");
+  }
+
+  // Swap photos only if the set actually changed, so the carousel keeps its place.
+  const media = row.querySelector(".archiver-media");
+  const urls = mediaOf(id).imgs;
+  if (media && String(urls.length) !== media.dataset.urls) {
+    const fresh = buildCarousel(urls, id);
+    const handle = media.querySelector(".archiver-handle");
+    if (handle) fresh.appendChild(handle);
+    media.replaceWith(fresh);
+  }
 }
 
 /* ----------------------------- orchestration ----------------------------- */

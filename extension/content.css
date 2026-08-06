@@ -255,6 +255,8 @@
 /* Airbnb won't offer this listing for the current dates. */
 .archiver-row-price--muted { font-size: 15px; color: #8a8a8a; }
 .archiver-row-unit { font: 400 12px sans-serif; color: #717171; margin-left: 5px; }
+/* Per-night alongside the per-30-nights headline. */
+.archiver-row-perday { font: 600 14px sans-serif; color: #444; margin-top: -2px; }
 .archiver-row-sub { font-size: 12px; color: #6a6a6a; }
 
 .archiver-row-ctrls { flex: none; display: flex; gap: 4px; }

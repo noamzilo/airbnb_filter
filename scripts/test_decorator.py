@@ -107,7 +107,9 @@ try:
     sub = d.execute_script("const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A'); return r?r.querySelector('.archiver-row-sub').textContent:'';")
     check("headline shows price per 30 nights", "$1,208" in head and "30 nights" in head, repr(head))
     check("no 'Listing <id>' title anywhere", d.execute_script("return !/Listing \\d/.test(document.querySelector('.archiver-panel').innerText)"))
-    check("sub-line keeps the raw stay price", "$40/night" in sub and "14 nights" in sub, repr(sub))
+    per = d.execute_script("const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A'); return r?r.querySelector('.archiver-row-perday').textContent:'';")
+    check("sub-line keeps the raw stay price", "14 nights" in sub and "$564" in sub, repr(sub))
+    check("per-night shown on its own line", "$40" in per and "night" in per, repr(per))
     check("price headline links to the room", d.execute_script(
         "const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A'); return r.querySelector('a.archiver-row-price').href.includes('/rooms/')"))
 
@@ -132,6 +134,73 @@ try:
         check("next advances the photo", car["second"] != car["first"] and car["third"] != car["second"], f"{car['first']} -> {car['second']}")
         check("prev goes back", car["back"] == car["second"])
         check("counter tracks position", car["c0"] == "1/3" and car["c1"] == "2/3", f"{car['c0']} {car['c1']}")
+
+    # --- carousels keep their place while prices land -------------------------
+    # A price probe writing to storage used to rebuild every row, snapping each
+    # carousel back to photo 1 -- which read as "jumping to previous images".
+    d.execute_script("""
+      window.__cats={starred:{
+        P1:{title:'P1',price:'$1',url:'https://www.airbnb.com/rooms/P1',ts:3},
+        P2:{title:'P2',price:'$2',url:'https://www.airbnb.com/rooms/P2',ts:2},
+        P3:{title:'P3',price:'$3',url:'https://www.airbnb.com/rooms/P3',ts:1}},maybe:{},archived:{}};
+      window.__images={P1:['a1.jpg','a2.jpg','a3.jpg'],P2:['b1.jpg','b2.jpg','b3.jpg'],P3:['c1.jpg','c2.jpg','c3.jpg']};
+      window.__prices={}; window.__tagcoords={}; window.__order=['P1','P2','P3'];
+      window.__settings.showAllPlaces=true;
+      window.__ls.forEach(f=>f({starred:{}}));
+    """); time.sleep(0.8)
+
+    # Each row must show ITS OWN photos, not a shared set.
+    srcs = d.execute_script("""
+      return [...document.querySelectorAll('.archiver-row')].map(r=>({
+        id:r.dataset.id, src:(r.querySelector('.archiver-media-img')||{}).getAttribute('src')}));
+    """)
+    check("each row shows its own photos", len(set(s["src"] for s in srcs)) == len(srcs) and len(srcs) == 3, str(srcs))
+    check("photos match the right listing",
+          all(s["src"].startswith({"P1": "a", "P2": "b", "P3": "c"}[s["id"]]) for s in srcs), str(srcs))
+
+    # Advance two carousels, then land a price like a probe would.
+    d.execute_script("""
+      const rows=[...document.querySelectorAll('.archiver-row')];
+      rows[0].querySelector('.archiver-cnav--next').click();
+      rows[0].querySelector('.archiver-cnav--next').click();
+      rows[1].querySelector('.archiver-cnav--next').click();
+    """)
+    before = d.execute_script("return [...document.querySelectorAll('.archiver-media-img')].map(i=>i.getAttribute('src'))")
+    check("carousels advanced", before[0] == "a3.jpg" and before[1] == "b2.jpg", str(before))
+
+    d.execute_script("""
+      window.__prices={P1:{symbol:'$',monthly:1500,nightly:50,basis:'monthly',ctx:'',probedAt:Date.now()}};
+      window.__ls.forEach(f=>f({prices:{}}));
+    """); time.sleep(0.8)
+    after = d.execute_script("return [...document.querySelectorAll('.archiver-media-img')].map(i=>i.getAttribute('src'))")
+    check("a price landing does NOT reset the carousels", after == before, f"{before} -> {after}")
+    check("the price actually updated in place",
+          "$1,500" in d.execute_script("return document.querySelector('.archiver-row .archiver-row-price').textContent"),
+          d.execute_script("return document.querySelector('.archiver-row .archiver-row-price').textContent"))
+
+    # Typing a note must survive a price landing too (no rebuild = no lost caret).
+    d.execute_script("const t=document.querySelector('.archiver-row .archiver-note'); t.focus(); t.value='typing';")
+    d.execute_script("""
+      window.__prices={P2:{symbol:'$',monthly:999,nightly:33,basis:'monthly',ctx:'',probedAt:Date.now()}};
+      window.__ls.forEach(f=>f({prices:{}}));
+    """); time.sleep(0.8)
+    check("note keeps focus while a price lands",
+          d.execute_script("return document.activeElement && document.activeElement.classList.contains('archiver-note')"))
+
+    # --- per-night shown alongside per-30-nights ------------------------------
+    d.execute_script("""
+      window.__prices={P1:{symbol:'$',monthly:1935,nightly:64.5,basis:'monthly',original:2662,ctx:'',probedAt:Date.now()}};
+      window.__ls.forEach(f=>f({prices:{}}));
+    """); time.sleep(0.6)
+    row = d.execute_script("""
+      const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='P1');
+      return {head:r.querySelector('.archiver-row-price').textContent,
+              per:(r.querySelector('.archiver-row-perday')||{}).textContent,
+              sub:r.querySelector('.archiver-row-sub').textContent};
+    """)
+    check("shows price per 30 nights", "$1,935" in row["head"] and "30 nights" in row["head"], str(row))
+    check("ALSO shows price per night", "$65" in row["per"] and "night" in row["per"], str(row))
+    check("keeps the monthly-rate context", "monthly rate" in row["sub"] and "was $2,662" in row["sub"], str(row))
 
     # --- the list scrolls ----------------------------------------------------
     d.execute_script("""
@@ -184,6 +253,7 @@ try:
       window.__tagcoords={A1:{lat:-25.29,lng:-57.57},A2:{lat:-25.28,lng:-57.56},
                           FAR1:{lat:31.77,lng:35.21},FAR2:{lat:48.86,lng:2.35}};
       window.__order=['A1','FAR1','A2','FAR2'];
+      window.__settings.showAllPlaces=false;   // this block is about the map filter
       window.__ls.forEach(f=>f({starred:{}}));
       return null;
     """); time.sleep(0.8)
