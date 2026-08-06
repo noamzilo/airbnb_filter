@@ -41,6 +41,7 @@ const Store = {
   // id -> {lat,lng} for starred+maybe listings, so the decorator can colour the
   // matching map pins (markers only expose a position, not the listing id).
   async getTagCoords() { return (await browser.storage.local.get("tagCoords")).tagCoords || {}; },
+  async getImages() { return (await browser.storage.local.get("images")).images || {}; },
 
   // Per-listing comments and the panel's custom order — independent of category
   // so they survive star <-> maybe <-> archive and re-tagging.

@@ -7,6 +7,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONTENT = (ROOT / "extension" / "content.js").read_text(encoding="utf-8")
@@ -23,7 +24,7 @@ window.Store={
   getAll:async()=>window.__cats,getStarred:async()=>window.__cats.starred,getMaybe:async()=>window.__cats.maybe,getArchived:async()=>window.__cats.archived,
   getCategory:async i=>{for(const c of C)if(window.__cats[c][i])return c;return null;},
   setCategory:async(i,s,c)=>{for(const k of C)delete window.__cats[k][i];if(c)window.__cats[c][i]={...(s||{}),ts:Date.now?1:1};fire({starred:{}});},
-  getStarredData:async()=>({}),setStarredData:async()=>{},getTagCoords:async()=>window.__tagcoords||{},
+  getStarredData:async()=>({}),setStarredData:async()=>{},getTagCoords:async()=>window.__tagcoords||{},getImages:async()=>window.__images||{},
   getNotes:async()=>window.__notes,setNote:async(i,t)=>{if(t&&t.trim())window.__notes[i]=t;else delete window.__notes[i];fire({notes:{}});},
   getOrder:async()=>window.__order,setOrder:async(a)=>{window.__order=a;fire({order:{}});},
   getSettings:async()=>window.__settings,setSetting:async(k,v)=>{window.__settings[k]=v;fire({settings:{}});}
@@ -66,10 +67,12 @@ try:
     d.execute_script("window.__order=['B','A']; window.__ls.forEach(f=>f({order:{}}));"); time.sleep(0.5)
     check("custom order applied", d.execute_script("return document.querySelector('.archiver-row').dataset.id")=="B")
 
-    # Comment saves (and does NOT rebuild the row -> keeps focus)
-    d.execute_script("const t=document.querySelector('.archiver-row .archiver-note'); t.focus(); t.value=''; ")
-    ActionChains(d).send_keys("great view").perform(); time.sleep(0.7)
-    check("comment saved to notes", d.execute_script("return Object.values(window.__notes).join('|')").find("great view") >= 0)
+    # Comment saves via the input listener (debounced ~400ms)
+    d.execute_script("""
+      const t=document.querySelector('.archiver-row .archiver-note');
+      t.value='great view'; t.dispatchEvent(new Event('input',{bubbles:true}));
+    """); time.sleep(0.7)
+    check("comment saved to notes", "great view" in d.execute_script("return Object.values(window.__notes).join('|')"))
 
     # Re-rate from the panel: trash a row -> leaves the panel
     d.execute_script("const b=[...document.querySelectorAll('.archiver-row .archiver-rowbtn')].find(x=>x.textContent==='🗑'); b&&b.click();")

@@ -8,17 +8,19 @@ let starredSet = new Set();
 let maybeSet = new Set();
 let tagCache = {};            // persisted full objects for starred+maybe (storage key "starredData")
 let tagCoordsCache = {};      // persisted { id: {lat,lng} } for starred+maybe (pin colouring)
+let imagesCache = {};         // persisted { id: [url,...] } for the panel carousel
 let showArchived = false;
 const seen = {};              // session cache: { id: {searchResult,mapResult,viewportPin,coord} }
 
 async function refresh() {
-  const { archived = {}, settings = {}, starred = {}, maybe = {}, starredData = {}, tagCoords = {} } =
-    await browser.storage.local.get(["archived", "settings", "starred", "maybe", "starredData", "tagCoords"]);
+  const { archived = {}, settings = {}, starred = {}, maybe = {}, starredData = {}, tagCoords = {}, images = {} } =
+    await browser.storage.local.get(["archived", "settings", "starred", "maybe", "starredData", "tagCoords", "images"]);
   archivedSet = new Set(Object.keys(archived));
   starredSet = new Set(Object.keys(starred));
   maybeSet = new Set(Object.keys(maybe));
   tagCache = starredData;
   tagCoordsCache = tagCoords;
+  imagesCache = images;
   showArchived = !!settings.showArchived;
 }
 refresh();
@@ -27,12 +29,14 @@ browser.storage.onChanged.addListener(refresh);
 /* ---- persist coords promptly (for pin colouring) + starred objects (slower) ---- */
 let coordTimer = null, dataTimer = null, coordDirty = false, dataDirty = false;
 function persistFromSeen() {
-  // coords for starred + maybe (drive pin colouring) — write promptly
+  // coords + images for starred + maybe (drive pin colouring + panel) — prompt
   for (const id of new Set([...starredSet, ...maybeSet])) {
-    const c = seen[id] && seen[id].coord;
-    if (!c) continue;
+    const s = seen[id];
+    if (!s || !s.coord) continue;
     const cur = tagCoordsCache[id];
-    if (!cur || cur.lat !== c.lat || cur.lng !== c.lng) { tagCoordsCache[id] = { lat: c.lat, lng: c.lng }; coordDirty = true; }
+    if (!cur || cur.lat !== s.coord.lat || cur.lng !== s.coord.lng) { tagCoordsCache[id] = { lat: s.coord.lat, lng: s.coord.lng }; coordDirty = true; }
+    const imgs = Filter.imagesOf(s.mapResult || s.searchResult);
+    if (imgs.length && JSON.stringify(imagesCache[id]) !== JSON.stringify(imgs)) { imagesCache[id] = imgs; coordDirty = true; }
   }
   // full objects for starred (drive map re-injection) — heavier, slower
   for (const id of starredSet) {
@@ -45,7 +49,7 @@ function flushCoords() {
   coordTimer = null;
   if (!coordDirty) return;
   coordDirty = false;
-  browser.storage.local.set({ tagCoords: tagCoordsCache }).catch(() => {});
+  browser.storage.local.set({ tagCoords: tagCoordsCache, images: imagesCache }).catch(() => {});
 }
 function flushData() {
   dataTimer = null;

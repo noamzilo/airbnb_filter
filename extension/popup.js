@@ -68,6 +68,7 @@ for (const tab of document.querySelectorAll(".tab")) {
   });
 }
 
+try { document.getElementById("ver").textContent = "v" + browser.runtime.getManifest().version; } catch (_) {}
 toggleEl.addEventListener("change", () => Store.setSetting("showArchived", toggleEl.checked));
 browser.storage.onChanged.addListener(render);
 render();

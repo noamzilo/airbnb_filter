@@ -71,6 +71,13 @@ const Filter = {
 
   /* ---- always-show-starred: cache + re-injection ---- */
 
+  // Photo URLs for a listing (for the panel's carousel).
+  imagesOf(item) {
+    const cp = item && item.contextualPictures;
+    if (!Array.isArray(cp)) return [];
+    return cp.map((p) => p && p.picture).filter((u) => typeof u === "string").slice(0, 8);
+  },
+
   // { lat, lng } from a listing object, or null.
   coordOf(item) {
     const c = item && item.demandStayListing && item.demandStayListing.location

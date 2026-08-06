@@ -10,6 +10,7 @@ let cats = { starred: {}, maybe: {}, archived: {} };
 let tagCoords = {};
 let notes = {};
 let order = [];
+let images = {};
 let showArchived = false;
 
 const CURRENCY = /[$€£₲¥₩₪₫฿]/;
@@ -20,6 +21,7 @@ async function loadState() {
   tagCoords = await Store.getTagCoords();
   notes = await Store.getNotes();
   order = await Store.getOrder();
+  images = await Store.getImages();
   showArchived = (await Store.getSettings()).showArchived;
 }
 
@@ -268,7 +270,9 @@ let panelEl = null;
 function ensurePanel() {
   if (panelEl && document.body.contains(panelEl)) return panelEl;
   panelEl = document.createElement("div"); panelEl.className = "archiver-panel";
-  const head = document.createElement("div"); head.className = "archiver-panel-head"; head.textContent = "My listings";
+  const head = document.createElement("div"); head.className = "archiver-panel-head";
+  let ver = ""; try { ver = browser.runtime.getManifest().version; } catch (_) {}
+  head.textContent = "My listings" + (ver ? "  ·  v" + ver : "");
   const list = document.createElement("div"); list.className = "archiver-panel-list";
   panelEl.append(head, list);
   document.body.appendChild(panelEl);
@@ -302,27 +306,35 @@ function reorder(fromId, toId) {
   ids.splice(idx < 0 ? ids.length : idx, 0, fromId);
   order = ids; Store.setOrder(ids);
 }
+function buildCarousel(urls) {
+  const wrap = document.createElement("div"); wrap.className = "archiver-carousel";
+  const img = document.createElement("img"); img.className = "archiver-carousel-img"; img.alt = ""; img.loading = "lazy";
+  wrap.appendChild(img);
+  if (!urls.length) { wrap.classList.add("archiver-carousel--empty"); return wrap; }
+  let i = 0; img.src = urls[0];
+  const count = document.createElement("div"); count.className = "archiver-carousel-count"; count.textContent = "1/" + urls.length;
+  const show = (n) => { i = (n + urls.length) % urls.length; img.src = urls[i]; count.textContent = (i + 1) + "/" + urls.length; };
+  const prev = document.createElement("button"); prev.className = "archiver-cnav archiver-cnav--prev"; prev.textContent = "‹";
+  const next = document.createElement("button"); next.className = "archiver-cnav archiver-cnav--next"; next.textContent = "›";
+  prev.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); show(i - 1); });
+  next.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); show(i + 1); });
+  wrap.append(prev, next, count);
+  if (urls.length < 2) { prev.style.display = "none"; next.style.display = "none"; count.style.display = "none"; }
+  return wrap;
+}
 function panelRow(id) {
   const snap = snapOf(id), cat = catOf(id);
   const row = document.createElement("div");
-  row.className = "archiver-row archiver-row--" + cat;
-  row.draggable = true; row.dataset.id = id;
-  row.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", id); row.classList.add("dragging"); });
-  row.addEventListener("dragend", () => row.classList.remove("dragging"));
+  row.className = "archiver-row archiver-row--" + cat; row.dataset.id = id;
   row.addEventListener("dragover", (e) => e.preventDefault());
   row.addEventListener("drop", (e) => { e.preventDefault(); reorder(e.dataTransfer.getData("text/plain"), id); });
 
-  const handle = document.createElement("div"); handle.className = "archiver-handle"; handle.textContent = "⠿";
-  const img = document.createElement("img"); img.className = "archiver-row-img"; img.alt = ""; if (snap.thumbnail) img.src = snap.thumbnail;
-  const meta = document.createElement("div"); meta.className = "archiver-row-meta";
-  const a = document.createElement("a"); a.className = "archiver-row-title"; a.href = snap.url || `https://www.airbnb.com/rooms/${id}`; a.target = "_blank"; a.rel = "noreferrer"; a.textContent = snap.title || `Listing ${id}`;
-  const price = document.createElement("div"); price.className = "archiver-row-price"; price.textContent = snap.price || "";
-  const note = document.createElement("textarea"); note.className = "archiver-note"; note.placeholder = "Add a note…"; note.rows = 1; note.value = notes[id] || "";
-  const grow = () => { note.style.height = "auto"; note.style.height = Math.min(note.scrollHeight, 120) + "px"; };
-  note.addEventListener("input", () => { grow(); });
-  note.addEventListener("input", debounce(() => Store.setNote(id, note.value), 400));
-  setTimeout(grow, 0);
-  meta.append(a, price, note);
+  const urls = (images[id] && images[id].length) ? images[id] : (snap.thumbnail ? [snap.thumbnail] : []);
+  const media = buildCarousel(urls);
+
+  const handle = document.createElement("div"); handle.className = "archiver-handle"; handle.textContent = "⠿"; handle.title = "Drag to reorder"; handle.draggable = true;
+  handle.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", id); row.classList.add("dragging"); });
+  handle.addEventListener("dragend", () => row.classList.remove("dragging"));
 
   const ctrls = document.createElement("div"); ctrls.className = "archiver-row-ctrls";
   const mk = (glyph, on, target) => {
@@ -335,13 +347,26 @@ function panelRow(id) {
     return b;
   };
   ctrls.append(mk("★", cat === "starred", "starred"), mk("?", cat === "maybe", "maybe"), mk("🗑", false, "archived"));
+  media.append(handle, ctrls); // overlaid on the image
 
-  row.append(handle, img, meta, ctrls);
+  const meta = document.createElement("div"); meta.className = "archiver-row-meta";
+  const a = document.createElement("a"); a.className = "archiver-row-title"; a.href = snap.url || `https://www.airbnb.com/rooms/${id}`; a.target = "_blank"; a.rel = "noreferrer"; a.textContent = snap.title || `Listing ${id}`;
+  const price = document.createElement("div"); price.className = "archiver-row-price"; price.textContent = snap.price || "";
+  const note = document.createElement("textarea"); note.className = "archiver-note"; note.placeholder = "Add a note…"; note.rows = 1; note.value = notes[id] || "";
+  const grow = () => { note.style.height = "auto"; note.style.height = Math.min(note.scrollHeight, 120) + "px"; };
+  note.addEventListener("input", () => grow());
+  note.addEventListener("input", debounce(() => Store.setNote(id, note.value), 400));
+  setTimeout(grow, 0);
+  meta.append(a, price, note);
+
+  row.append(media, meta);
   return row;
 }
 function renderPanel() {
-  if (!positionPanel()) return;
+  ensurePanel();
+  positionPanel();
   const list = panelEl.querySelector(".archiver-panel-list");
+  if (!list) return;
   list.textContent = "";
   const ids = orderedIds();
   if (!ids.length) {
@@ -352,8 +377,22 @@ function renderPanel() {
   for (const id of ids) list.appendChild(panelRow(id));
 }
 
+// Hide Airbnb's own result cards (our panel replaces them). Only the map popup
+// card (a /rooms card over the map) is left alone.
+function hideSideList() {
+  const mapEl = mapElement(); if (!mapEl) return;
+  for (const anchor of document.querySelectorAll('a[href*="/rooms/"]')) {
+    const container = cardContainer(anchor);
+    if (!container || container.dataset.archiverHidden === "1") continue;
+    if (isOverMap(container, mapEl)) continue; // keep the map popup card
+    container.style.display = "none";
+    container.dataset.archiverHidden = "1";
+  }
+}
+
 /* ----------------------------- orchestration ----------------------------- */
 function decorateAll() {
+  try { hideSideList(); } catch (e) { console.warn("[Archiver] hideSideList", e); }
   try { decorateMapCards(); } catch (e) { console.warn("[Archiver] decorateMapCards", e); }
   try { hideArchivedMarkers(); } catch (e) { console.warn("[Archiver] hideArchivedMarkers", e); }
   try { colorMarkers(); } catch (e) { console.warn("[Archiver] colorMarkers", e); }
