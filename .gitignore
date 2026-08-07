@@ -151,3 +151,9 @@ web-ext-artifacts/
 
 # AMO signing credentials (never commit)
 amo.env
+
+# Local toggle: create to stop the Stop hook auto-shipping the extension
+.claude/skip-autoship
+
+# Python bytecode from the recon/test scripts
+__pycache__/
