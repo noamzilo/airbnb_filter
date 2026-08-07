@@ -211,9 +211,9 @@ async function probePrice(id, ctx) {
 }
 
 // The room page has no price, but it does carry the coordinate a probe needs,
-// plus the host's name and the real listing name — so the saved link alone is
-// enough to price and label a listing we've never seen on a map. One fetch,
-// cached: `listingPage` dedupes concurrent callers.
+// plus the host's name, the real listing name and the house rules (pets) — so
+// the saved link alone is enough to price and label a listing we've never seen
+// on a map. One fetch, cached: `listingPage` dedupes concurrent callers.
 const listingPageCache = {};
 function fetchListingPage(id) {
   if (listingPageCache[id]) return listingPageCache[id];
@@ -221,8 +221,12 @@ function fetchListingPage(id) {
     const res = await fetch(linkFor(id), { credentials: "same-origin" });
     if (!res.ok) return {};
     const html = await res.text();
-    const out = { coord: Filter.coordFromHtml(html), host: Filter.hostFromHtml(html) };
-    if (out.host) await Store.setHost(id, out.host);
+    const out = { coord: Filter.coordFromHtml(html), host: Filter.hostFromHtml(html), pets: Filter.petsFromHtml(html) };
+    // Host name and pets land in the same record; a page that didn't say
+    // must not overwrite what an earlier read did say.
+    const facts = { ...(out.host || {}) };
+    if (out.pets !== null) facts.pets = out.pets;
+    if (Object.keys(facts).length) await Store.setHost(id, facts);
     return out;
   })().catch((e) => { console.warn("[Archiver] listing page fetch failed", id, e); return {}; });
   return listingPageCache[id];
@@ -249,7 +253,9 @@ function scheduleHostLookups(ids) {
   let n = 0;
   for (const id of ids) {
     if (n >= 4) break;                       // the room page is ~600KB; go easy
-    if (hostOf(id) || hostAsked.has(id)) continue;
+    // A record with only the pets flag isn't a hit — the name is still missing.
+    const h = hostOf(id);
+    if ((h && h.name) || hostAsked.has(id)) continue;
     hostAsked.add(id);
     n++;
     fetchListingPage(id);
@@ -487,6 +493,45 @@ function findCardGrid() {
   if (hdr && lca.contains(hdr)) return null;
   return lca;
 }
+/* Airbnb's pager belongs to the grid we just replaced: it pages through THEIR
+   18-per-page results, not ours. Left alone it reads as "5 pages" under a panel
+   holding a single row, and clicking a page just reloads the same panel. Our
+   list is one scroll over every saved listing on this map, so the pager has
+   nothing left to page — hide it with the grid, restore it with the grid.
+   Matched structurally (a nav in the results column whose links are numbered
+   search pages), not by its English aria-label. */
+let hiddenPager = null;
+function findPager() {
+  const map = mapElement();
+  const mr = map && map.getBoundingClientRect();
+  for (const nav of document.querySelectorAll("nav")) {
+    const r = nav.getBoundingClientRect();
+    if (mr && mr.width && r.width && r.left >= mr.left) continue;   // not in the results column
+    const numbered = [...nav.querySelectorAll("a,button")]
+      .filter((e) => /^\s*\d+\s*$/.test(e.textContent || ""));
+    if (numbered.length < 2) continue;
+    if (!nav.querySelector('a[href*="/s/"], a[href*="cursor"], a[href*="items_offset"]')) continue;
+    return nav;
+  }
+  return null;
+}
+function hidePager() {
+  const pager = findPager();
+  if (pager) {
+    if (hiddenPager && hiddenPager !== pager && document.contains(hiddenPager)) {
+      hiddenPager.style.removeProperty("display");
+    }
+    pager.style.display = "none";
+    hiddenPager = pager;
+  } else if (hiddenPager && document.contains(hiddenPager)) {
+    hiddenPager.style.display = "none";   // Airbnb sometimes clears the style back
+  }
+}
+function restorePager() {
+  if (hiddenPager && document.contains(hiddenPager)) hiddenPager.style.removeProperty("display");
+  hiddenPager = null;
+}
+
 // Returns true if the panel is mounted in the column (in flow).
 function mountPanel() {
   // findCardGrid only sees VISIBLE cards, so the moment we hide the grid it
@@ -562,13 +607,14 @@ function cardsTop(colRight) {
 
 function positionPanel() {
   const map = mapElement();
-  if (!map) { if (panelEl) panelEl.style.display = "none"; return false; }
+  if (!map) { if (panelEl) panelEl.style.display = "none"; restorePager(); return false; }
   const r = map.getBoundingClientRect();
-  if (!r.width || r.left < 40) { if (panelEl) panelEl.style.display = "none"; return false; }
+  if (!r.width || r.left < 40) { if (panelEl) panelEl.style.display = "none"; restorePager(); return false; }
 
   // Preferred: sit in the column in Airbnb's own flow. Nothing to position, and
   // nothing of theirs ends up underneath us.
   if (mountPanel()) {
+    hidePager();
     panelEl.classList.remove("archiver-panel-overlay");
     for (const p of ["top", "left", "width", "height"]) panelEl.style.removeProperty(p);
     panelEl.style.display = "flex";
@@ -579,6 +625,7 @@ function positionPanel() {
   panelEl = ensurePanel();
   if (panelEl.parentElement !== document.body) document.body.appendChild(panelEl);
   if (hiddenGrid) { hiddenGrid.style.removeProperty("display"); hiddenGrid = null; }
+  restorePager();   // their pager comes back with their grid
   panelEl.classList.add("archiver-panel-overlay");
   // Cover the results column and nothing above it. This used to sit at
   // `max(56, map.top - 96)` — a guess that landed 56px over a 152px-tall header
@@ -1035,9 +1082,141 @@ function updateRow(row) {
    On a room page: a button into the chat with that host.
    On a message thread: the apartment + host it's about, and a button to it.
    Both read the host/listing name from the room page (Store.getHosts cache). */
+/* Where the bar belongs on a MESSAGE THREAD page: in the flow at the top of the
+   conversation column, above the host's name. Floating it (fixed, bottom) put it
+   straight over Airbnb's compose box — you couldn't see what you were typing.
+   Verified layout (scripts/recon_thread_layout.py, logged in): the thread column
+   is `section[data-testid="orbital-panel-thread"]`, and inside it a flex column
+   holds the header (host name) above the message pane + composer. Insert before
+   that header and the pane simply shrinks. Anchored on data-testids and on
+   *computed* flex direction rather than Airbnb's hashed class names.
+   Returns null on any other page, where the floating bar covers nothing. */
+function threadDock() {
+  const sec = document.querySelector('[data-testid="orbital-panel-thread"]');
+  if (!sec) return null;
+  const anchor = sec.querySelector('[data-testid="message-thread-container"]')
+    || sec.querySelector('[data-testid="message-list"]')
+    || sec.querySelector('[data-testid="messaging-composebar"]');
+  if (!anchor) return null;
+  let node = anchor;
+  for (let i = 0; i < 10 && node !== sec && node.parentElement; i++) {
+    const p = node.parentElement;
+    const st = getComputedStyle(p);
+    let first = p.firstElementChild;
+    // Our own bar, once docked, must not be mistaken for the header — that
+    // would make every pass re-insert it and churn the page forever.
+    if (first && first.classList.contains("archiver-bridge")) first = first.nextElementSibling;
+    if (st.display.indexOf("flex") !== -1 && st.flexDirection === "column" && first && first !== node) {
+      return { parent: p, before: first };
+    }
+    node = p;
+  }
+  return null;
+}
+/* The blank strip ABOVE the conversation — Airbnb's own header band, which is
+   empty across the middle. Sitting there costs the chat nothing (the bar is
+   fixed, out of the flow) and still reads as "above the host's name".
+   Measured live at 900–1500px wide (scripts/recon_thread_topband.py): the band
+   is 81–97px tall, with only the logo on the left and the nav on the right, so
+   the free middle is 400–500px+. Returns the slot, or null when it won't fit —
+   then we fall back to docking in the flow. */
+function topBandSlot(header) {
+  const hr = header.getBoundingClientRect();
+  const bandBottom = hr.top;
+  if (bandBottom < 52 || hr.width < 300) return null;
+  let left = hr.left, right = hr.right;
+  const mid = (hr.left + hr.right) / 2;
+  for (const el of document.querySelectorAll("header a, header button, header img, header svg, nav a, nav button")) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8 || r.top >= bandBottom || r.bottom <= 0) continue;
+    if (r.right <= left || r.left >= right) continue;   // clear of us already
+    if (r.right <= mid) left = Math.max(left, r.right + 10);
+    else right = Math.min(right, r.left - 10);
+  }
+  if (right - left < 280) return null;
+  return { left, width: right - left, bottom: bandBottom };
+}
+// Only ever write a style that actually changed: an attribute set to the same
+// value still fires the MutationObserver, and this runs from it — writing
+// unconditionally would keep the page re-laying-out forever.
+function setStyle(el, prop, val) { if (el.style[prop] !== val) el.style[prop] = val; }
+function clearBridgePlacement(bar) {
+  bar.classList.remove("archiver-bridge--docked", "archiver-bridge--top");
+  setStyle(bar, "left", ""); setStyle(bar, "top", ""); setStyle(bar, "width", "");
+}
+function mountBridge(bar) {
+  // Never move or re-measure the bar while you're typing in it: the note grows
+  // as it fills, so its height is deliberately "wrong" for the slot, and moving
+  // a focused field (or re-parenting it) would take the caret with it.
+  if (bar.contains(document.activeElement)) return;
+  const dock = threadDock();
+  const slot = dock && topBandSlot(dock.before);
+  if (slot) {
+    // Fixed in the blank band: costs the conversation no space at all.
+    if (bar.parentElement !== document.body) {
+      bar.classList.remove("archiver-bridge--docked");
+      document.body.appendChild(bar);
+    }
+    bar.classList.add("archiver-bridge--top");
+    setStyle(bar, "left", Math.round(slot.left) + "px");
+    setStyle(bar, "width", Math.round(slot.width) + "px");
+    // Its height is only known once it has been laid out at that width.
+    setStyle(bar, "top", Math.max(2, Math.round(slot.bottom - bar.offsetHeight - 6)) + "px");
+    return;
+  }
+  if (dock) {
+    // Nothing fits up there — dock in the flow above the header. Still better
+    // than floating over the composer.
+    if (bar.classList.contains("archiver-bridge--top")) clearBridgePlacement(bar);
+    bar.classList.add("archiver-bridge--docked");
+    if (bar.parentElement !== dock.parent || bar.nextElementSibling !== dock.before) {
+      dock.parent.insertBefore(bar, dock.before);
+    }
+    return;
+  }
+  // Not a thread page: the original floating bar, which covers nothing there.
+  clearBridgePlacement(bar);
+  if (bar.parentElement !== document.body) document.body.appendChild(bar);
+}
+function repositionBridge() {
+  const bar = document.querySelector(".archiver-bridge");
+  if (bar) mountBridge(bar);
+}
+// How tall the note is allowed to get — which depends on which way it grows.
+// The top-band bar is pinned by its top, so the box extends DOWN and the limit
+// is the bottom of the window. The floating bar is anchored to `bottom`, so it
+// extends UP and the limit is how much is above it: measuring downward there
+// left only the ~70px under the bar, which looked exactly like "it stops
+// expanding after two lines".
+function noteRoom(note) {
+  const bar = note.closest(".archiver-bridge");
+  const r = note.getBoundingClientRect();
+  if (!bar) return window.innerHeight - 32;
+  if (bar.classList.contains("archiver-bridge--top")) return window.innerHeight - r.top - 16;
+  if (getComputedStyle(bar).position === "fixed") return r.bottom - 16;   // grows upward
+  return window.innerHeight - 32;                                        // in flow
+}
+// Grow the note to hold everything typed in it; the extra height simply covers
+// whatever is behind the bar, which is the point.
+function growNote(note) {
+  if (document.activeElement !== note) return;
+  note.style.height = "auto";
+  // scrollHeight is the content box; the height we set is the border box, so add
+  // the borders back or the last line stays clipped behind a scrollbar.
+  const borders = note.offsetHeight - note.clientHeight;
+  note.style.height = Math.max(32, Math.min(note.scrollHeight + borders, noteRoom(note))) + "px";
+}
+// Self-heal: whatever event we failed to hook (paste variants, IME, a re-render
+// that swapped the field), a focused note that doesn't fit gets re-grown on the
+// next decorate pass. Costs nothing when it already fits — and writes nothing,
+// so it can't churn the MutationObserver that calls it.
+function growNoteIfClipped(note) {
+  if (!note || document.activeElement !== note) return;
+  if (note.scrollHeight > note.clientHeight) growNote(note);
+}
 function bridgeBar() {
   let bar = document.querySelector(".archiver-bridge");
-  if (bar) return bar;
+  if (bar) { mountBridge(bar); return bar; }
   bar = document.createElement("div");
   bar.className = "archiver-bridge";
   const text = document.createElement("div"); text.className = "archiver-bridge-text";
@@ -1048,11 +1227,22 @@ function bridgeBar() {
   // Your comment for this listing, editable right here in the chat window; saves
   // to the same place the panel reads (bridgeNoteId tracks the current listing).
   note.addEventListener("input", debounce(() => { if (bridgeNoteId) Store.setNote(bridgeNoteId, note.value); }, 400));
-  text.append(title, subtitle, note);
+  // A one-line slot while you're not using it; while you are, it grows to fit
+  // every line and simply covers what's underneath (the bar is fixed and on top).
+  note.addEventListener("focus", () => growNote(note));
+  note.addEventListener("input", () => growNote(note));
+  // keyup/paste are belt and braces: `input` covers every text change, but a
+  // missed one must not leave you typing into a box you can't read.
+  note.addEventListener("keyup", () => growNoteIfClipped(note));
+  note.addEventListener("paste", () => setTimeout(() => growNote(note), 0));
+  note.addEventListener("blur", () => { note.style.height = ""; });
+  text.append(title, subtitle);
   const go = document.createElement("a");
   go.className = "archiver-bridge-btn"; go.target = "_top"; go.rel = "noreferrer";
-  bar.append(text, go);
-  document.body.appendChild(bar);
+  // Note as a sibling, not nested in the text block: the floating bar wraps it
+  // onto its own line, the top-band bar keeps all three on one row.
+  bar.append(text, note, go);
+  mountBridge(bar);
   return bar;
 }
 function fillBridge(id, mode) {
@@ -1064,6 +1254,7 @@ function fillBridge(id, mode) {
   bar.querySelector(".archiver-bridge-sub").textContent = h.name ? "Hosted by " + h.name : "looking up host…";
   const noteEl = bar.querySelector(".archiver-bridge-note");
   if (noteEl) {
+    growNoteIfClipped(noteEl);   // last resort, on every decorate pass
     // Set the value when the listing changes, or to reflect an external edit —
     // but never yank text out from under active typing here.
     if (bridgeNoteId !== id) { bridgeNoteId = id; noteEl.value = notes[id] || ""; }
@@ -1135,7 +1326,7 @@ function decorateAll() {
   try { decorateBridge(); } catch (e) { console.warn("[Archiver] decorateBridge", e); }
 }
 const observer = new MutationObserver(debounce(decorateAll, 250));
-window.addEventListener("resize", debounce(positionPanel, 200));
+window.addEventListener("resize", debounce(() => { positionPanel(); repositionBridge(); }, 200));
 // The top edge now follows the cards, which move under the sticky header as you
 // scroll — so re-place it on scroll too, or a strip of Airbnb's own cards shows
 // through above the panel.

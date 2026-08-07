@@ -119,6 +119,18 @@ try:
     check("row has a Go-to-property button", d.execute_script(
         "const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A'); const p=r&&r.querySelector('a.archiver-host-prop'); return !!p && /\\/rooms\\//.test(p.href);"))
 
+    # The pets flag is still read and cached (see the host block below), but the
+    # user asked for no badge in the row -- so there must not be one.
+    d.execute_script("window.__hosts={A:{name:'Barbara',pets:true}}; window.__ls.forEach(f=>f({hosts:{}}));")
+    time.sleep(0.6)
+    check("no pets badge rendered in the row", d.execute_script(
+        "return !document.querySelector('.archiver-pets')"))
+    check("a known pets flag stays out of the row text", d.execute_script(
+        "const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A');"
+        "return r ? !/pets/i.test(r.innerText) : false;"),
+        d.execute_script("const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A'); return r?r.innerText.replace(/\\n/g,' | '):''"))
+    d.execute_script("window.__hosts={}; window.__ls.forEach(f=>f({hosts:{}}));"); time.sleep(0.4)
+
     # --- carousel actually cycles -------------------------------------------
     d.execute_script("""
       window.__images={A:['https://a0.muscache.com/im/x1.jpg','https://a0.muscache.com/im/x2.jpg','https://a0.muscache.com/im/x3.jpg']};
@@ -232,6 +244,20 @@ try:
         check("in flow: list is not its own scrollbox", scroll["over"] <= 1, str(scroll))
         check("in flow: every row is laid out", scroll["rows"] == 25, str(scroll))
         check("in flow: the page scrolls instead", scroll["pageScrolls"], str(scroll))
+        # Airbnb's "1 2 3 4 5" pager pages through THEIR results, not ours -- with
+        # the grid replaced it offers pages of nothing. It must go with the grid.
+        pager = d.execute_script("""
+          const nav=[...document.querySelectorAll('nav')].find(n =>
+            [...n.querySelectorAll('a,button')].filter(e=>/^\\s*\\d+\\s*$/.test(e.textContent||'')).length >= 2
+            && n.querySelector('a[href*="/s/"],a[href*="cursor"],a[href*="items_offset"]'));
+          if (!nav) return {found:false};
+          return {found:true, display:getComputedStyle(nav).display,
+                  h:Math.round(nav.getBoundingClientRect().height)};
+        """)
+        if pager["found"]:
+            check("in flow: Airbnb's pager is hidden", pager["display"] == "none" and pager["h"] == 0, str(pager))
+        else:
+            print("SKIP  no Airbnb pager rendered on this page", flush=True)
     else:
         check("list overflows its panel", scroll["over"] > 200, str(scroll))
         check("list actually scrolls", scroll["moved"] > 100, f"scrollTop={scroll['moved']}")
@@ -517,6 +543,9 @@ try:
                 "const r=document.querySelector('.archiver-row-host'); return r?r.innerText:''"),
                 d.execute_script("const r=document.querySelector('.archiver-row-host'); return r?r.innerText:''"))
             check("real listing name captured too", bool(got.get("listingName")), str(got))
+        # The same room-page fetch also answers "does it allow pets?" -- kept in
+        # the store for later use, deliberately NOT shown in the row.
+        check("pets flag still read off the same room page", isinstance((got or {}).get("pets"), bool), str(got))
         # With no conversation on record yet, the link falls back to Airbnb's
         # compose form -- and says so, because that is NOT the existing chat.
         chat = d.execute_script("const a=document.querySelector('.archiver-host-chat'); return a?a.getAttribute('href'):''")

@@ -55,6 +55,31 @@ try:
             "return document.querySelector('.archiver-bridge-btn').textContent"),
             d.execute_script("return document.querySelector('.archiver-bridge-btn').textContent"))
 
+    # --- the note grows here too, and this bar is anchored to the BOTTOM ------
+    # Growing room has to be measured upward here: measuring downward (toward the
+    # window edge the bar is already sitting on) caps the box at a line or two,
+    # which reads as "it just stops expanding".
+    note = d.find_element("css selector", ".archiver-bridge-note")
+    idle_h = d.execute_script("return Math.round(document.querySelector('.archiver-bridge-note').getBoundingClientRect().height)")
+    note.click()
+    note.send_keys("one\ntwo\nthree\nfour\nfive\nsix")
+    time.sleep(0.8)
+    grown = d.execute_script("""
+      const n = document.querySelector('.archiver-bridge-note');
+      const r = n.getBoundingClientRect();
+      return {h: Math.round(r.height), top: Math.round(r.top), bottom: Math.round(r.bottom),
+              scrollH: n.scrollHeight, clientH: n.clientHeight, vh: innerHeight,
+              lines: n.value.split('\\n').length};
+    """)
+    check("floating bar's note grows too", grown["h"] > idle_h + 20, f"{idle_h}px -> {grown['h']}px")
+    check("all six lines visible in the floating bar",
+          grown["scrollH"] <= grown["clientH"], f"scrollH={grown['scrollH']} clientH={grown['clientH']}")
+    check("grown note stays on screen (grows upward, not off the bottom)",
+          grown["top"] >= 0 and grown["bottom"] <= grown["vh"], str(grown))
+    d.execute_script("document.querySelector('.archiver-bridge-note').blur()"); time.sleep(0.6)
+    check("floating bar's note shrinks back on blur", d.execute_script(
+        "return Math.round(document.querySelector('.archiver-bridge-note').getBoundingClientRect().height)") == idle_h)
+
     # --- learning listingId -> threadId from a chat page ---------------------
     # /guest/messages needs a login, so simulate the thread page: same URL shape,
     # same "the thread links its listing" DOM. The real page was confirmed working

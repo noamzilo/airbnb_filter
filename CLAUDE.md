@@ -8,9 +8,16 @@ the DOM as **text** (screenshots are too token-expensive). Read
   Airbnb, injects `extension/content.js` with a stubbed store, asserts
   panel / colouring / map-tagging behavior. Run after any `content.js` change.
 - **`node scripts/test-filter.js` / `test-reinject.js` / `test-html-rewrite.js` /
-  `test-price.js` / `test-session-repair.js`** — fast pure-logic tests (no
-  browser): archiving, re-injection, HTML blob rewriting, price normalisation,
-  and the session repair that keeps every Firefox window across a restart.
+  `test-price.js` / `test-pets.js` / `test-session-repair.js`** — fast pure-logic
+  tests (no browser): archiving, re-injection, HTML blob rewriting, price
+  normalisation, reading the pets house rule off a room page, and the session
+  repair that keeps every Firefox window across a restart.
+- **`python scripts/test_thread_bar.py`** — the bridge bar on a **real logged-in**
+  message thread: in the blank band above the host name, taking no space from the
+  chat and covering neither the composer nor Airbnb's nav, with its note growing
+  while focused. `/guest/messages` needs a login, so it (and `recon_thread_*.py`,
+  `repro_note_growth.py`) drive a read-only **copy** of the real profile via
+  `scripts/lib_profile.py`.
 - **`python scripts/test_restart.py`** — drives real Firefox with three windows
   and fails if the auto-restart loses any. Run after touching the `--restart`
   path in `scripts/install_local.js` (see D38).
@@ -37,6 +44,14 @@ Gotchas:
   the signed `.xpi` into the real profile and restarts Firefox **without losing
   tabs** (graceful close + `browser.sessionstore.resume_session_once`). Never make
   the user click through `about:addons`, and never ask them to restart — see D37.
+- Shipping is **automatic for subagents**: a `SubagentStop` hook
+  (`.claude/settings.json` → `scripts/subagent_autoship_hook.js`) fires when a
+  subagent finishes and something under `extension/` is newer than the newest
+  signed `.xpi`, and sends it back to run `/update-extension` itself. It is
+  deliberately not a `Stop` hook — the main loop is not asked to ship every turn.
+  Don't ship half-finished work: if the change is incomplete or a test is red,
+  say so and finish; the hook won't re-fire for you. Create
+  `.claude/skip-autoship` to disable it entirely.
 - **Never** publish to the public/listed channel (`npm run sign:listed` /
   `--channel=listed`) or otherwise make the add-on publicly searchable unless the
   user explicitly asks for public publishing.

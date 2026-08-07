@@ -340,8 +340,9 @@
   transform: translateX(-50%);
   z-index: 999998;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: 8px 16px;
   max-width: min(680px, 94vw);
   padding: 10px 14px;
   background: #fff;
@@ -351,15 +352,54 @@
   font: 13px sans-serif;
   color: #222;
 }
-.archiver-bridge-text { min-width: 0; }
+/* On a message thread the bar sits in the blank strip ABOVE the conversation
+   (Airbnb's own header band, empty across the middle). It stays fixed, so the
+   chat keeps every pixel it had; left/top/width are measured and set inline.
+   One row — the band is only ~80px tall. */
+.archiver-bridge--top {
+  bottom: auto;
+  transform: none;
+  flex-wrap: nowrap;
+  gap: 10px;
+  max-width: none;
+  padding: 6px 10px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
+}
+.archiver-bridge--top .archiver-bridge-text { flex: 0 1 auto; max-width: 45%; }
+.archiver-bridge--top .archiver-bridge-note {
+  flex: 1 1 140px;
+  order: 1;
+  min-height: 32px;
+  height: 32px;
+  resize: none;
+}
+.archiver-bridge--top .archiver-bridge-btn { padding: 8px 14px; }
+
+/* Fallback when the band is too short to hold it: docked in the flow above the
+   host's name. Everything that made it an overlay has to be undone. */
+.archiver-bridge--docked {
+  position: static;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  z-index: auto;
+  max-width: none;
+  flex: none;
+  margin: 10px 12px 6px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+.archiver-bridge-text { min-width: 0; flex: 1 1 auto; }
 .archiver-bridge-title {
   font: 700 14px sans-serif;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .archiver-bridge-sub { color: #717171; font-size: 12px; }
+/* The note is a sibling of the text block, so the floating bar wraps it onto a
+   line of its own under [text][button] (order 3), while the top-band bar keeps
+   all three side by side. */
 .archiver-bridge-note {
-  margin-top: 8px;
-  width: 100%;
+  flex: 1 1 100%;
+  order: 3;
   box-sizing: border-box;
   min-height: 40px;
   resize: vertical;
@@ -370,6 +410,7 @@
 }
 .archiver-bridge-btn {
   flex: none;
+  order: 2;
   padding: 10px 18px;
   font: 700 14px sans-serif;
   color: #fff;

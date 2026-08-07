@@ -304,6 +304,24 @@ const Filter = {
     return out.name || out.listingName ? out : null;
   },
 
+  // Does this listing allow pets? Search results say NOTHING about amenities
+  // (verified: scripts/recon_pets.py) -- but the room page does, and we already
+  // fetch that page for the host name, so this rides along for free.
+  //
+  // Read the ICON, not the title: Airbnb writes the house rule as
+  //   {"__typename":"BasicListItem","title":"Pets allowed","icon":"SYSTEM_PETS"}
+  //   {"__typename":"BasicListItem","title":"No pets","icon":"SYSTEM_NO_PETS"}
+  // and the title is localised while the icon is not. "No" wins over "yes" so a
+  // page that mentions both (an unavailable-amenities list next to the rule)
+  // never reads as pet-friendly. Verified live on both kinds of listing:
+  // scripts/recon_pets2.py. Returns true / false / null (page didn't say).
+  petsFromHtml(html) {
+    const s = String(html || "");
+    if (/"icon"\s*:\s*"SYSTEM_NO_PETS"/.test(s)) return false;
+    if (/"icon"\s*:\s*"SYSTEM_PETS"/.test(s)) return true;
+    return null;
+  },
+
   // Message the host about a listing WITHOUT knowing the thread id -- Airbnb
   // resolves this to the existing conversation when there is one. Verified the
   // route exists (auth-gated, not 404): scripts/recon_contact.py.

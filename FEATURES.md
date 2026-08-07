@@ -99,6 +99,11 @@ that contains the map and blanking the page).
   expanded search bar, which is `position:absolute` and overhangs the header.
 - Re-placed on resize, on scroll, and on a 700 ms backstop timer (geometry can
   change with no DOM mutation to observe).
+- **Airbnb's "1 2 3 4 5" pager is hidden with the grid it belongs to.** The panel
+  is one scroll over every saved listing on this map, so their 18-per-page pager
+  offers pages of nothing (it read as "5 pages" above a single row). Found
+  structurally — a `<nav>` in the results column whose links are numbered search
+  pages — and restored the moment the panel stops replacing the grid.
 
 ### Rows
 Each row is photo-left / data-right:
@@ -203,6 +208,15 @@ saved /rooms/<id> link → room page (has NO price, but has a coordinate)
   backstop; search results never populate it). Cached in `hosts`, along with the
   real listing name and host id. Throttled to 4 lookups per render — the room
   page is ~600 KB.
+- **Pets allowed** rides on that same fetch (`Filter.petsFromHtml`) and is cached
+  in the same record as `pets: true|false`. Search results carry no amenity data
+  at all, but the room page states the house rule as
+  `{"title":"Pets allowed","icon":"SYSTEM_PETS"}` /
+  `{"title":"No pets","icon":"SYSTEM_NO_PETS"}`. The **icon** is what's read —
+  titles are localised, icons aren't — and `NO_PETS` wins over `PETS` so a page
+  carrying both never reads as pet-friendly. **Collected but not displayed**: the
+  row badge was dropped at the user's request (0.1.21); the data keeps accruing
+  so a pets filter/badge can be turned on later without a re-crawl.
 - **A bridge bar** appears on two kinds of page:
   - **On `/rooms/<id>`** — names the place and its host, with a
     "💬 Chat with <name>" button into the conversation.
@@ -211,7 +225,20 @@ saved /rooms/<id> link → room page (has NO price, but has a coordinate)
     because the inbox sidebar links every other conversation's listing too), with
     a "🏠 Open the apartment" button.
   - Both carry an **editable note** for that listing, writing to the same store
-    the panel reads.
+    the panel reads. In the top-band bar it's a one-line slot that **grows while
+    focused** to show every line typed — overlaying the conversation underneath
+    rather than clipping — and snaps back on blur. The bar is pinned while you
+    type in it, so nothing moves under the caret.
+  - **Placement** on a thread page: **fixed in the blank strip above the
+    conversation** — Airbnb's own header band, which is empty across the middle
+    (81–97px tall at every width measured). Being fixed, it takes *no* space from
+    the chat: the header and composer stay exactly where they were. `threadDock()`
+    finds the conversation column by `data-testid` + computed flex direction
+    (never hashed class names) and `topBandSlot()` measures the free width
+    between Airbnb's logo and its nav, re-measured on resize. If the band is too
+    short (<52px) or too narrow (<280px free) it falls back to docking in the
+    flow above the host name. On a room page it still floats bottom-centre —
+    nothing to cover there.
 - **Thread learning**: visiting a thread page is the one moment the
   listing↔conversation mapping is observable, so it's recorded in `threads`.
   Once known, panel and bridge link **straight into the existing conversation**;
@@ -253,7 +280,7 @@ is an in-place upgrade.
 | `tagCoords` | `{id: {lat,lng}}` | pin colouring + viewport filtering |
 | `images` | `{id: [url,…]}` | panel carousel |
 | `prices` | `{id: {monthly, nightly, total, nights, symbol, original, basis, ctx, probedAt, unavailable, lastMonthly}}` | normalised price + freshness |
-| `hosts` | `{id: {name, hostId, listingName}}` | host line, bridge bar |
+| `hosts` | `{id: {name, hostId, listingName, pets}}` | host line, pets badge, bridge bar |
 | `threads` | `{listingId: threadId}` | deep-link into an existing conversation |
 | `notes` | `{id: text}` | per-listing comment (category-independent) |
 | `order` | `[id,…]` | panel drag order (category-independent) |
@@ -297,6 +324,7 @@ Claude closes its own loop; see [docs/closing-the-loop.md](docs/closing-the-loop
 | `python scripts/test_decorator.py` | main regression — real Firefox on live Airbnb, `content.js` injected with a stubbed store; asserts panel, colouring, map tagging as **text** (screenshots are too token-expensive) |
 | `python scripts/test_panel_geometry.py` | panel sizing vs. Airbnb's card column and top chrome |
 | `python scripts/test_bridge.py` | room ↔ thread bridge bar |
+| `python scripts/test_thread_bar.py` | bar docked above the host name on a **real logged-in** thread, covering nothing (profile copy) |
 | `python scripts/test_restart.py` | 3-window Firefox restart loses nothing |
 | `node scripts/test-filter.js` | archived ids removed from all three arrays |
 | `node scripts/test-reinject.js` | starred re-injection + bounds logic |
@@ -306,6 +334,7 @@ Claude closes its own loop; see [docs/closing-the-loop.md](docs/closing-the-loop
 | `python scripts/test_startup_load.py` | tabs whose requests race the add-on's startup |
 | `python scripts/repro_broken_page.py` | drives a **copy** of the real profile, so the installed add-on's background script actually runs |
 | `node scripts/test-price.js` | price normalisation across all quote shapes |
+| `node scripts/test-pets.js` | reading the pets house rule off a room page |
 | `node scripts/test-session-repair.js` | session repair branches, browser-free |
 | `scripts/drive.py`, `recon_*.py` | ad-hoc live DOM/JSON recon |
 

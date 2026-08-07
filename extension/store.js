@@ -61,15 +61,17 @@ const Store = {
     return true;
   },
 
-  // id -> { name, hostId, listingName } read off the room page. Hosts and
-  // listing names barely change, so this is written once and reused.
+  // id -> { name, hostId, listingName, pets } read off the room page — one fetch
+  // answers all of them. Hosts, listing names and house rules barely change, so
+  // this is written once and reused.
   async getHosts() { return (await browser.storage.local.get("hosts")).hosts || {}; },
   async setHost(id, info) {
-    if (!info || !(info.name || info.listingName)) return false;
+    if (!info || !Object.keys(info).length) return false;
     const hosts = await Store.getHosts();
     const cur = hosts[id] || {};
-    if (cur.name === info.name && cur.listingName === info.listingName && cur.hostId === info.hostId) return false;
-    hosts[id] = { ...cur, ...info };
+    const next = { ...cur, ...info };
+    if (JSON.stringify(cur) === JSON.stringify(next)) return false;
+    hosts[id] = next;
     await browser.storage.local.set({ hosts });
     return true;
   },
