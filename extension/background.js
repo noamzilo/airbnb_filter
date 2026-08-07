@@ -11,6 +11,7 @@ let tagCoordsCache = {};      // persisted { id: {lat,lng} } for starred+maybe (
 let imagesCache = {};         // persisted { id: [url,...] } for the panel carousel
 let pricesCache = {};         // persisted { id: {monthly,nightly,total,nights,symbol} }
 let showArchived = false;
+let rewriteDocuments = false;   // opt-in; see Filter.shouldFilter
 let lastCtx = "";             // price context (dates/guests) of the last search seen
 const seen = {};              // session cache: { id: {searchResult,mapResult,viewportPin,coord} }
 
@@ -29,6 +30,7 @@ async function refresh() {
     imagesCache = images;
     pricesCache = prices;
     showArchived = !!settings.showArchived;
+    rewriteDocuments = !!settings.rewriteDocuments;
   } finally {
     refreshing = false;
   }
@@ -144,12 +146,13 @@ function rewriteHtml(text) {
 
 browser.webRequest.onBeforeRequest.addListener(
   (details) => {
-    // Our own price probes are parsed by the content script — don't buffer and
-    // rewrite them here too.
-    if (details.url.indexOf("archiver_probe=1") !== -1) return;
-
-    // The page URL carries the dates/guests; an XHR's own URL doesn't.
+    // The page URL carries the dates/guests; an XHR's own URL doesn't. Worth
+    // recording even for requests we then leave alone.
     lastCtx = Filter.ctxOf(details.documentUrl || details.url);
+
+    // Never create a stream filter we aren't going to use: holding one open is
+    // itself the risk. See Filter.shouldFilter for why documents are opt-in.
+    if (!Filter.shouldFilter(details, { rewriteDocuments: rewriteDocuments })) return;
 
     // NB: we process even when nothing is tagged yet, so `seen` is warm and the
     // very first star/maybe still gets photos + a price for the panel.

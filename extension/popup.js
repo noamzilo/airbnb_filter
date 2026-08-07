@@ -1,6 +1,7 @@
 // Airbnb Archiver — popup: Liked / Maybe / Archived tabs.
 
 const toggleEl = document.getElementById("showArchived");
+const rewriteEl = document.getElementById("rewriteDocuments");
 
 function row(id, snap, actionLabel, onAction) {
   const r = document.createElement("div");
@@ -47,7 +48,9 @@ function fill(listEl, map, emptyMsg, actionLabel, onAction) {
 
 async function render() {
   const { starred, maybe, archived } = await Store.getAll();
-  toggleEl.checked = (await Store.getSettings()).showArchived;
+  const settings = await Store.getSettings();
+  toggleEl.checked = settings.showArchived;
+  rewriteEl.checked = settings.rewriteDocuments;
 
   const clear = (id) => Store.setCategory(id, null, null);
   const nStar = fill(document.getElementById("list-starred"), starred, "Click ☆ on a listing to like it.", "Remove", clear);
@@ -70,5 +73,6 @@ for (const tab of document.querySelectorAll(".tab")) {
 
 try { document.getElementById("ver").textContent = "v" + browser.runtime.getManifest().version; } catch (_) {}
 toggleEl.addEventListener("change", () => Store.setSetting("showArchived", toggleEl.checked));
+rewriteEl.addEventListener("change", () => Store.setSetting("rewriteDocuments", rewriteEl.checked));
 browser.storage.onChanged.addListener(render);
 render();

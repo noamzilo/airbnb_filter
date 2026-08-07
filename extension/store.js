@@ -117,7 +117,9 @@ const Store = {
 
   async getSettings() {
     const { settings = {} } = await browser.storage.local.get("settings");
-    return { showArchived: false, ...settings };
+    // rewriteDocuments: let the interceptor rewrite whole search PAGES, not just
+    // the XHRs. Off by default — a page handed back wrong breaks silently.
+    return { showArchived: false, rewriteDocuments: false, ...settings };
   },
   async setSetting(key, value) {
     const settings = await Store.getSettings();

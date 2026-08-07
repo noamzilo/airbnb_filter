@@ -64,6 +64,26 @@ const Filter = {
     return { text: JSON.stringify(root), removed };
   },
 
+  // Should the interceptor touch this request at all?
+  //
+  // The XHR path is where the value is: every search and map pan comes back as
+  // JSON, and rewriting it is both safe (a bad parse just passes through) and
+  // necessary (that is what keeps archived listings gone). The main_frame path
+  // is different -- it buffers a whole ~1.6MB HTML document and writes it back,
+  // and a document handed back wrong does not fail loudly, it silently breaks
+  // the page. It also earns little: the panel covers Airbnb's results column,
+  // the content script hides archived pins itself, and it reads the same
+  // server-rendered blob for photos and prices. So documents are left alone
+  // unless `rewriteDocuments` is explicitly turned on.
+  shouldFilter(details, settings) {
+    const url = (details && details.url) || "";
+    if (url.indexOf("archiver_probe=1") !== -1) return false;   // our own price probe
+    if (details && details.type === "main_frame") {
+      return !!(settings && settings.rewriteDocuments);
+    }
+    return true;
+  },
+
   // Make JSON safe to drop back inside a <script> tag (avoid "</script>" breakout).
   escapeForScript(jsonText) {
     return jsonText.replace(/</g, "\\u003c");
