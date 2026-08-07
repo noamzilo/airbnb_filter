@@ -1,6 +1,6 @@
 # FEATURES — Airbnb Archiver
 
-What the extension actually does, as built. Version `0.1.15`, Firefox-only
+What the extension actually does, as built. Version `0.1.16`, Firefox-only
 (MV2, `browser_specific_settings.gecko.id = airbnb-archiver@noam.local`), scoped
 to `*://*.airbnb.com/*`. For *why* each of these exists see the decision table in
 [PROJECT_LOG.md](PROJECT_LOG.md) (D1–D39); this file is the *what*.
@@ -16,7 +16,7 @@ locally-stored workflow:
 |---|---|
 | **The map** | discovery — you tag new places from pin popup cards |
 | **The panel** (ours, covers Airbnb's card column) | your curated, reorderable, commentable list |
-| **The interceptor** (background) | deletes archived listings from Airbnb's data *before the page renders it* |
+| **The interceptor** (background) | deletes archived listings from Airbnb's search data *before the page renders it* — every JSON XHR by default, whole HTML pages only if `rewriteDocuments` is on |
 | **The toolbar popup** | bulk review / un-tag, and settings |
 
 Archived listings are removed at the **data** level, not hidden with CSS — so
@@ -73,10 +73,9 @@ HTML document** buffers ~1.6 MB and is opt-in behind the `rewriteDocuments`
 setting (`Filter.shouldFilter`) — off by default, because the panel covers the
 results column anyway and the content script hides archived pins itself.
 
-> ⚠️ In the current working tree the `rewriteDocuments` checkbox exists in
-> [popup.html](extension/popup.html) but is **not yet wired up** in
-> [popup.js](extension/popup.js) — the setting is read by the background page,
-> but nothing in the UI writes it.
+The checkbox in [popup.html](extension/popup.html) is wired to
+`Store.setSetting("rewriteDocuments", …)` in [popup.js](extension/popup.js), so
+the behaviour can be turned back on and off without a rebuild.
 
 **Disabled on purpose:** `Filter.injectStarredMap()` (re-injecting cached
 starred listings Airbnb dropped) is implemented and Node-tested but *not called* —
@@ -297,6 +296,10 @@ Claude closes its own loop; see [docs/closing-the-loop.md](docs/closing-the-loop
 | `node scripts/test-filter.js` | archived ids removed from all three arrays |
 | `node scripts/test-reinject.js` | starred re-injection + bounds logic |
 | `node scripts/test-html-rewrite.js` | HTML blob rewriting / shape guard |
+| `node scripts/test-should-filter.js` | which requests get filtered; documents opt-in, XHRs always |
+| `python scripts/test_cached_load.py` | cold vs. cached vs. renavigated document loads |
+| `python scripts/test_startup_load.py` | tabs whose requests race the add-on's startup |
+| `python scripts/repro_broken_page.py` | drives a **copy** of the real profile, so the installed add-on's background script actually runs |
 | `node scripts/test-price.js` | price normalisation across all quote shapes |
 | `node scripts/test-session-repair.js` | session repair branches, browser-free |
 | `scripts/drive.py`, `recon_*.py` | ad-hoc live DOM/JSON recon |
