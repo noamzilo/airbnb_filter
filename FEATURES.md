@@ -1,6 +1,6 @@
 # FEATURES — Airbnb Archiver
 
-What the extension actually does, as built. Version `0.1.16`, Firefox-only
+What the extension actually does, as built. Version `0.1.24`, Firefox-only
 (MV2, `browser_specific_settings.gecko.id = airbnb-archiver@noam.local`), scoped
 to `*://*.airbnb.com/*`. For *why* each of these exists see the decision table in
 [PROJECT_LOG.md](PROJECT_LOG.md) (D1–D39); this file is the *what*.
@@ -117,8 +117,11 @@ Each row is photo-left / data-right:
 - **★ / ? / 🗑 buttons** to re-rubric in place.
 - **Host line**: "Hosted by <name>", a **🏠 Property** link, and a
   **💬 Chat / 💬 Message** link (see §7).
-- **A free-text note** (`<textarea>`, debounced save). Notes and order are stored
-  independently of category, so they survive star ↔ maybe ↔ archive.
+- **Two tabs over the bottom slot — Note and Chat** (see §7).
+  - **Note** (the default) — a free-text `<textarea>`, debounced save. Notes and
+    order are stored independently of category, so they survive
+    star ↔ maybe ↔ archive.
+  - **Chat** — the host conversation itself, embedded and scrollable in the row.
 - **Drag handle** — pointer-event reordering (Airbnb swallows HTML5
   `dragstart`/`drop`), with live neighbour swapping and edge autoscroll.
 
@@ -239,6 +242,25 @@ saved /rooms/<id> link → room page (has NO price, but has a coordinate)
     short (<52px) or too narrow (<280px free) it falls back to docking in the
     flow above the host name. On a room page it still floats bottom-centre —
     nothing to cover there.
+- **The conversation, embedded in the panel row** (the *Chat* tab of §4). The
+  💬 button still opens the full thread in its own tab; this is the same
+  conversation without leaving the map.
+  - Airbnb serves `/guest/messages` with `x-frame-options: SAMEORIGIN` and the
+    panel **is** that origin, so the thread is simply framed. At panel width
+    Airbnb's own responsive layout collapses its inbox sidebar and page header to
+    zero and gives the column to the conversation — nothing is cropped, and the
+    frame carries a **working composer**, so you can reply from the panel.
+  - **Lazy**: a frame is built only when its tab is first opened. Once built it
+    is never rebuilt — hiding the pane keeps the iframe alive, because removing
+    or moving an iframe would reload the chat and lose your place in it. That is
+    also why the panel reconciles its list by key instead of re-creating rows
+    (D48): panning the map no longer disturbs an open conversation.
+  - **Per row and independent** — several chats can be open at once. Which tab a
+    row is on is remembered per listing, like its carousel position.
+  - A listing you've **never messaged** has no thread to frame, so its Chat tab
+    offers the compose form instead, and upgrades itself into the real
+    conversation as soon as visiting one teaches us the mapping.
+  - Drag the bottom edge of the chat pane to resize it (320px by default).
 - **Thread learning**: visiting a thread page is the one moment the
   listing↔conversation mapping is observable, so it's recorded in `threads`.
   Once known, panel and bridge link **straight into the existing conversation**;

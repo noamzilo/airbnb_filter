@@ -318,6 +318,28 @@
 .archiver-rowbtn.on:nth-child(1) { background: #f5a623; }   /* starred */
 .archiver-rowbtn.on:nth-child(2) { background: #2f80ed; }   /* maybe */
 
+/* The bottom of a row: your note, or the host conversation, under two tabs. */
+.archiver-tabbed {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.archiver-tabs { display: flex; gap: 4px; }
+.archiver-tab {
+  flex: none;
+  padding: 3px 11px;
+  font: 600 11px sans-serif;
+  color: #666;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid #ddd;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.archiver-tab:hover { color: #222; border-color: #b9b9b9; }
+.archiver-tab.on { color: #fff; background: #222; border-color: #222; }
+
 .archiver-note {
   flex: 1 1 auto;
   min-height: 54px;
@@ -330,6 +352,47 @@
   font: 12px/1.4 sans-serif;
   background: rgba(255, 255, 255, 0.92);
 }
+
+/* The embedded conversation. Tall enough to read a few exchanges without being
+   so tall that two open chats push everything else off the panel; drag the
+   bottom edge to resize. */
+.archiver-chat {
+  flex: none;
+  height: 320px;
+  min-height: 120px;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  resize: vertical;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #fff;
+}
+.archiver-chat-frame { display: block; width: 100%; height: 100%; border: 0; }
+.archiver-chat-empty {
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  text-align: center;
+  font: 12px/1.4 sans-serif;
+  color: #555;
+}
+.archiver-chat-empty p { margin: 0; }
+.archiver-chat-hint { color: #9a9a9a; font-size: 11px; }
+.archiver-chat-start {
+  padding: 5px 12px;
+  font: 600 12px sans-serif;
+  color: #fff;
+  background: #d81e5b;
+  border-radius: 999px;
+  text-decoration: none;
+}
+.archiver-chat-start:hover { background: #b8184c; }
 
 /* Bridge bar: on a room page it points at the chat, on a message thread it
    names the apartment + host and points back at the listing. */

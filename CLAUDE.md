@@ -12,6 +12,13 @@ the DOM as **text** (screenshots are too token-expensive). Read
   tests (no browser): archiving, re-injection, HTML blob rewriting, price
   normalisation, reading the pets house rule off a room page, and the session
   repair that keeps every Firefox window across a restart.
+- **`python scripts/test_chat_tab.py`** — the Note / Chat tabs on each panel row:
+  tab switching, lazy loading, the empty state, and that an open conversation is
+  never re-created by a re-render (stub-based, no login).
+- **`python scripts/test_chat_live.py`** — the same tab against a **real
+  logged-in** conversation: the embedded thread really renders, scrolls, and has
+  a composer. Uses a read-only profile copy. Run it if Airbnb ever changes its
+  framing headers or its narrow-width layout.
 - **`python scripts/test_thread_bar.py`** — the bridge bar on a **real logged-in**
   message thread: in the blank band above the host name, taking no space from the
   chat and covering neither the composer nor Airbnb's nav, with its note growing

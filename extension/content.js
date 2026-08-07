@@ -934,13 +934,110 @@ function panelRow(id) {
   hostRow.append(hostName, prop, chat);
   fillHost(hostRow, id);
 
+  meta.append(head, perDay, sub, hostRow, buildTabbed(id));
+  row.append(media, meta);
+  return row;
+}
+
+/* --- the note / chat tabs ---------------------------------------------
+   The bottom of every row is one slot with two tabs over it: your note (the
+   default, and what used to be the whole slot) and the actual conversation with
+   the host, embedded live. The point is reading and answering chats without
+   leaving the map — the 💬 button in the host row above still opens the full
+   thread in its own tab.
+
+   Verified with scripts/recon_chat_iframe.py: framing a real
+   /guest/messages/<threadId> from a page on www.airbnb.com works
+   (x-frame-options is SAMEORIGIN, and we are that origin), and at panel width
+   Airbnb's own responsive layout collapses its inbox sidebar and nav to zero —
+   so the frame shows the conversation alone, scroller and composer included.
+   Nothing has to be cropped. ------------------------------------------ */
+
+// Which tab each row is on, kept per listing like carouselAt: a re-render must
+// not flip you back to the note. Rows are independent — several chats can be
+// open at once.
+const tabAt = {};
+
+function buildTabbed(id) {
+  const box = document.createElement("div"); box.className = "archiver-tabbed";
+
+  const tabs = document.createElement("div"); tabs.className = "archiver-tabs";
+  const mk = (key, label, title) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "archiver-tab"; b.dataset.tab = key;
+    b.textContent = label; b.title = title;
+    b.addEventListener("pointerdown", (e) => e.stopPropagation());  // not a drag
+    b.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      tabAt[id] = key;
+      applyTab(box, id);
+    });
+    return b;
+  };
+  tabs.append(
+    mk("note", "Note", "Your private note about this place"),
+    mk("chat", "Chat", "Your conversation with the host, right here"));
+
   const note = document.createElement("textarea");
   note.className = "archiver-note"; note.placeholder = "Add a note…"; note.value = notes[id] || "";
   note.addEventListener("input", debounce(() => Store.setNote(id, note.value), 400));
 
-  meta.append(head, perDay, sub, hostRow, note);
-  row.append(media, meta);
-  return row;
+  const chat = document.createElement("div"); chat.className = "archiver-chat";
+
+  box.append(tabs, note, chat);
+  applyTab(box, id);
+  return box;
+}
+
+// Show one tab and hide the other. The hidden pane is only ever hidden, never
+// removed: pulling the iframe out of the DOM would end the conversation's
+// browsing context, so flipping to the note and back would reload the chat and
+// lose your place in it.
+function applyTab(box, id) {
+  const key = tabAt[id] === "chat" ? "chat" : "note";
+  for (const b of box.querySelectorAll(".archiver-tab")) b.classList.toggle("on", b.dataset.tab === key);
+  const note = box.querySelector(".archiver-note");
+  const chat = box.querySelector(".archiver-chat");
+  if (note) note.style.display = key === "note" ? "" : "none";
+  if (chat) {
+    chat.style.display = key === "chat" ? "" : "none";
+    if (key === "chat") fillChat(chat, id);
+  }
+}
+
+// The conversation loads only when its tab is actually opened — booting Airbnb's
+// message app once per row for a panel of forty would be ruinous — and then
+// stays loaded. Re-running this is free unless the pane's state genuinely
+// changed, which is what upgrades "no conversation yet" into the real thread the
+// moment one is learned.
+function fillChat(pane, id) {
+  const want = hasThread(id) ? "frame" : "empty";
+  if (pane.dataset.state === want) return;
+  pane.dataset.state = want;
+  pane.textContent = "";
+
+  if (want === "empty") {
+    // Nothing to embed: a listing you've never messaged has no thread, and
+    // /contact_host is a blank compose form, not a conversation.
+    const box = document.createElement("div"); box.className = "archiver-chat-empty";
+    const p = document.createElement("p"); p.textContent = "No conversation about this place yet.";
+    const a = document.createElement("a");
+    a.className = "archiver-chat-start";
+    a.href = chatUrlFor(id); a.target = "_blank"; a.rel = "noreferrer";
+    a.textContent = "💬 Message the host";
+    const hint = document.createElement("p");
+    hint.className = "archiver-chat-hint";
+    hint.textContent = "Send one message and the thread appears here.";
+    box.append(p, a, hint);
+    pane.appendChild(box);
+    return;
+  }
+
+  const f = document.createElement("iframe");
+  f.className = "archiver-chat-frame";
+  f.title = "Conversation with the host";
+  f.src = chatUrlFor(id);
+  pane.appendChild(f);
 }
 function renderPanel() {
   if (dragRow) return;
@@ -964,30 +1061,30 @@ function renderPanel() {
 
   highlightMarker(null, false);
   const scroll = list.scrollTop;
-  list.textContent = "";
   lastSig = sig;
 
   updateHead(g);
 
+  const items = [];
   if (!g.total) {
-    const e = document.createElement("div"); e.className = "archiver-panel-empty";
-    e.textContent = "Nothing here yet — star or “maybe” listings from the map.";
-    list.appendChild(e); return;
+    items.push(emptyItem("Nothing here yet — star or “maybe” listings from the map."));
+  } else {
+    for (const id of g.shown) items.push(rowItem(id));
+    if (g.unplaced.length) {
+      items.push(dividerItem(`${g.unplaced.length} without a saved location`));
+      for (const id of g.unplaced) items.push(rowItem(id));
+    }
+    if (!g.shown.length && !g.unplaced.length) {
+      items.push(emptyItem(`None of your ${g.total} listings are in this part of the map.`));
+    } else if (g.hidden) {
+      items.push(dividerItem(`${g.hidden} more elsewhere on the map`));
+    }
   }
-  for (const id of g.shown) list.appendChild(panelRow(id));
-
-  if (g.unplaced.length) {
-    list.appendChild(divider(`${g.unplaced.length} without a saved location`));
-    for (const id of g.unplaced) list.appendChild(panelRow(id));
-  }
-  if (!g.shown.length && !g.unplaced.length) {
-    const e = document.createElement("div"); e.className = "archiver-panel-empty";
-    e.textContent = `None of your ${g.total} listings are in this part of the map.`;
-    list.appendChild(e);
-  } else if (g.hidden) {
-    list.appendChild(divider(`${g.hidden} more elsewhere on the map`));
-  }
+  syncList(list, items);
   list.scrollTop = scroll; // a re-render shouldn't jump you back to the top
+  if (!g.total) return;
+  // Rows that were kept are still showing the old price/host, so refresh them.
+  for (const row of list.querySelectorAll(".archiver-row")) updateRow(row);
   // Whatever is on screen gets its price re-read from Airbnb, and its host
   // looked up if we don't have one yet.
   try { schedulePriceProbes([...g.shown, ...g.unplaced]); } catch (e) { console.warn("[Archiver] probe scheduling", e); }
@@ -997,6 +1094,46 @@ function divider(text) {
   const d = document.createElement("div");
   d.className = "archiver-divider"; d.textContent = text;
   return d;
+}
+
+/* --- rebuilding the list without throwing away what's still in it ------
+   The panel used to empty the list and re-create every row whenever the set of
+   listings changed — which is every map pan. That is now unaffordable: a row's
+   Chat tab holds a live iframe, and removing (or even moving) an iframe ends its
+   browsing context, so the conversation you were reading would reload from the
+   top. So match the wanted list against what's on screen by key and touch only
+   the difference. Rows that keep their relative order are never moved, so
+   panning a couple of listings out of view leaves an open chat — and a carousel,
+   and a note caret — completely undisturbed. -------------------------- */
+function rowItem(id) { return { key: "r:" + id, build: () => panelRow(id) }; }
+function dividerItem(text) { return { key: "d:" + text, build: () => divider(text) }; }
+function emptyItem(text) {
+  return { key: "e:" + text, build: () => {
+    const e = document.createElement("div");
+    e.className = "archiver-panel-empty"; e.textContent = text;
+    return e;
+  } };
+}
+function syncList(list, items) {
+  const have = new Map();
+  for (const child of [...list.children]) {
+    const k = child.dataset ? child.dataset.key : null;
+    if (k && !have.has(k)) have.set(k, child);
+    else child.remove();            // unkeyed or a duplicate: not reusable
+  }
+  let cursor = list.firstChild;
+  for (const it of items) {
+    let node = have.get(it.key);
+    if (node) {
+      have.delete(it.key);
+      if (node === cursor) { cursor = cursor.nextSibling; continue; }  // already in place
+    } else {
+      node = it.build();
+      node.dataset.key = it.key;
+    }
+    list.insertBefore(node, cursor);
+  }
+  for (const stale of have.values()) stale.remove();
 }
 function setChatLink(a, id) {
   a.href = chatUrlFor(id);
@@ -1060,6 +1197,10 @@ function updateRow(row) {
   if (hostRow) fillHost(hostRow, id);
   const chat = row.querySelector(".archiver-host-chat");
   if (chat) setChatLink(chat, id);
+  // Keeps the row on its tab, and swaps "no conversation yet" for the real
+  // thread as soon as visiting one teaches us the mapping.
+  const tabbed = row.querySelector(".archiver-tabbed");
+  if (tabbed) applyTab(tabbed, id);
 
   const btns = row.querySelectorAll(".archiver-rowbtn");
   if (btns.length >= 2) {
