@@ -51,6 +51,10 @@ Gotchas:
   the signed `.xpi` into the real profile and restarts Firefox **without losing
   tabs** (graceful close + `browser.sessionstore.resume_session_once`). Never make
   the user click through `about:addons`, and never ask them to restart — see D37.
+- **Then commit and push, without asking.** A ship ends in the remote, not at the
+  signature — otherwise the repo and the add-on the user is running drift apart.
+  `extension/.amo-upload-uuid` is tracked and changes on every sign, so it belongs
+  in the commit; `amo.env` and `web-ext-artifacts/` are gitignored.
 - Shipping is **automatic for subagents**: a `SubagentStop` hook
   (`.claude/settings.json` → `scripts/subagent_autoship_hook.js`) fires when a
   subagent finishes and something under `extension/` is newer than the newest

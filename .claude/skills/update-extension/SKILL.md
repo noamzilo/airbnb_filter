@@ -1,14 +1,18 @@
 ---
 name: update-extension
-description: Build, AMO-sign, and package a new version of the Airbnb Archiver Firefox extension so it can be installed permanently in normal Firefox. Use when the user wants to ship/update the installed extension (e.g. "update the extension", "rebuild and sign", "/update-extension").
+description: Build, AMO-sign, install, and commit+push a new version of the Airbnb Archiver Firefox extension so it can be installed permanently in normal Firefox. Use when the user wants to ship/update the installed extension (e.g. "update the extension", "rebuild and sign", "/update-extension").
 ---
 
 # Update (build + sign) the Airbnb Archiver extension
 
-Goal: produce a fresh Mozilla-signed `.xpi` the user can install in normal
-Firefox, and tell them where it is. The signed add-on is **unlisted**
+Goal: produce a fresh Mozilla-signed `.xpi`, install it in the user's real
+Firefox, and **commit and push** the result. The signed add-on is **unlisted**
 (self-distributed); installing the new `.xpi` upgrades in place and preserves the
 user's archived/liked data (same add-on id `airbnb-archiver@noam.local`).
+
+A ship isn't done at the signature: it ends with the new version installed
+(step 6) and committed to the remote (step 8), so the repo and the add-on the
+user is actually running never drift apart.
 
 Run all commands from the project root (`c:\Users\noams\src\airbnb_filter`).
 
@@ -95,8 +99,34 @@ Run all commands from the project root (`c:\Users\noams\src\airbnb_filter`).
    If the dev runner (`npm run dev`) is running, remind them to stop it so there
    aren't two copies adding buttons.
 
-8. **Commit (ask first).** Offer to commit the version bump + any code changes.
-   Do NOT commit `amo.env` or `web-ext-artifacts/` (both gitignored).
+8. **Commit and push — do it, don't ask.** Anything that was worth signing and
+   installing is worth having in the remote, and a shipped version that exists
+   only on this machine is how the repo and the installed add-on drift apart.
+
+   ```
+   git add -A
+   git commit -F- <<'EOF'
+   <subject line, ending with (<version>)>
+
+   <what changed and why>
+
+   Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+   EOF
+   git push
+   ```
+
+   - `amo.env` and `web-ext-artifacts/` are gitignored — check `git status`
+     before committing rather than trusting that.
+   - `extension/.amo-upload-uuid` **is** tracked and changes on every sign; it
+     belongs in the commit.
+   - Put the version in the subject (e.g. `… (0.1.24)`), matching the existing
+     history.
+   - If the current branch has no upstream, `git push -u origin <branch>`.
+   - Only skip this if the user explicitly said not to commit. If the push
+     fails (no network, rejected, protected branch), say so plainly — the
+     extension is still installed and live either way.
+   - Don't open a PR unless the user asks; if the branch isn't `main`, mention
+     that a PR is available.
 
 ## Notes
 - **The auto-install only upgrades an add-on that is already installed and
