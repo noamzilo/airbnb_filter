@@ -451,15 +451,66 @@ function ensurePanel() {
   document.body.appendChild(panelEl);
   return panelEl;
 }
+// Bottom of Airbnb's top chrome — everything the panel must stay clear of.
+// The header's own box is not enough. Expanding the search bar does NOT grow the
+// header (measured: 152px either way); the expanded bar is position:absolute
+// inside it and hangs ~16px past its bottom edge, and it is wider than the map
+// column, so it reaches left underneath the panel. That overhang is exactly what
+// swallowed "Where / Check in", so measure the descendants too and take the
+// lowest edge any of them reach.
+function chromeBottom() {
+  let b = 0;
+  for (const el of document.querySelectorAll("header")) {
+    const cr = el.getBoundingClientRect();
+    if (!cr.height || cr.top > 240) continue;   // only the chrome pinned at the top
+    b = Math.max(b, cr.bottom);
+    // Only short things that hang just past the header count as chrome. The
+    // header also contains a full-viewport overlay host; letting that vote sent
+    // the bottom to 865 and collapsed the panel to a sliver at the foot of the
+    // screen. Real overhang here is the 66px-tall search bar clearing 152 by 16.
+    const MAX_OVERHANG = 200;
+    for (const kid of el.querySelectorAll("*")) {
+      const kr = kid.getBoundingClientRect();
+      if (!kr.width || !kr.height) continue;
+      if (kr.top > cr.bottom) continue;               // a dropdown/menu, not chrome
+      if (kr.height > MAX_OVERHANG) continue;         // an overlay host, not chrome
+      if (kr.bottom > cr.bottom + MAX_OVERHANG) continue;
+      b = Math.max(b, kr.bottom);
+    }
+  }
+  return b;
+}
+
+// Top of Airbnb's own card column. Airbnb already lays this out below whatever
+// chrome is showing, so following it keeps the panel the size of the cards it
+// replaces — which is the whole point: cover them, hide nothing else.
+// `colRight` is the map's left edge: only count cards actually in the results
+// column. Some itemListElement nodes measure far to the right of the map (they
+// sit in a horizontally overflowing container), and letting those vote drags the
+// top edge to a row that isn't in the column we're covering.
+function cardsTop(colRight) {
+  let top = Infinity;
+  for (const c of document.querySelectorAll('[itemprop="itemListElement"]')) {
+    const cr = c.getBoundingClientRect();
+    if (!cr.width || !cr.height) continue;
+    if (cr.left >= colRight) continue;
+    top = Math.min(top, cr.top);
+  }
+  return top === Infinity ? null : top;
+}
+
 function positionPanel() {
   const map = mapElement();
   if (!map) { if (panelEl) panelEl.style.display = "none"; return false; }
   const r = map.getBoundingClientRect();
   if (!r.width || r.left < 40) { if (panelEl) panelEl.style.display = "none"; return false; }
-  // Cover the results column: from a bit above the map's top (to hide the strip
-  // of Airbnb cards that peeks there) down to the bottom of the map. Bounded so
-  // it never rides up over the header.
-  const top = Math.max(56, r.top - 96);
+  // Cover the results column and nothing above it. This used to sit at
+  // `max(56, map.top - 96)` — a guess that landed 56px over a 152px-tall header
+  // and covered the left half of the search bar. Take the cards' own top, and
+  // never rise above the live chrome (they scroll under a sticky header).
+  const ct = cardsTop(r.left);
+  const wanted = ct === null ? r.top - 96 : ct;   // no cards in the DOM yet
+  const top = Math.max(0, Math.round(chromeBottom()), Math.round(wanted));
   // Always run to the bottom of the window. Sizing to the map's own box breaks
   // both ways: a map taller than the window pushed the list off-screen (it got
   // clipped instead of scrolling), and a map SHORTER than the window left
@@ -1009,6 +1060,10 @@ function decorateAll() {
 }
 const observer = new MutationObserver(debounce(decorateAll, 250));
 window.addEventListener("resize", debounce(positionPanel, 200));
+// The top edge now follows the cards, which move under the sticky header as you
+// scroll — so re-place it on scroll too, or a strip of Airbnb's own cards shows
+// through above the panel.
+window.addEventListener("scroll", debounce(positionPanel, 100), { passive: true });
 window.addEventListener("popstate", () => setTimeout(syncPanelToMap, 50));
 
 async function start() {
@@ -1019,7 +1074,10 @@ async function start() {
   decorateAll();
   renderPanel();
   // Backstop: history.pushState from the page fires no event we can see.
-  setInterval(syncPanelToMap, 700);
+  // Re-place the panel on the same backstop. Geometry can change with no DOM
+  // mutation to observe (the search bar expanding, a late font, the map getting
+  // its size), and without this a panel hidden at first render never recovers.
+  setInterval(() => { syncPanelToMap(); try { positionPanel(); } catch (e) {} }, 700);
   console.log("[Archiver] active");
 }
 start();
