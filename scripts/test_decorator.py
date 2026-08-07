@@ -216,13 +216,25 @@ try:
       window.__ls.forEach(f=>f({starred:{}}));
     """); time.sleep(1.0)
     scroll = d.execute_script("""
+      const p=document.querySelector('.archiver-panel');
       const l=document.querySelector('.archiver-panel-list');
       const over=l.scrollHeight-l.clientHeight;
       l.scrollTop=400; const moved=l.scrollTop;
-      return {over, moved, clientH:l.clientHeight, rows:document.querySelectorAll('.archiver-row').length};
+      return {over, moved, clientH:l.clientHeight, rows:document.querySelectorAll('.archiver-row').length,
+              inFlow: !p.classList.contains('archiver-panel-overlay'),
+              pageScrolls: document.documentElement.scrollHeight > window.innerHeight + 200};
     """)
-    check("list overflows its panel", scroll["over"] > 200, str(scroll))
-    check("list actually scrolls", scroll["moved"] > 100, f"scrollTop={scroll['moved']}")
+    if scroll["inFlow"]:
+        # Mounted in Airbnb's column, the column scrolls -- the list must NOT be
+        # its own scroll container, and nothing may be clipped. (The old overlay
+        # clipped content when the list wasn't allowed to scroll; in flow the
+        # equivalent failure is content cut off with no way to reach it.)
+        check("in flow: list is not its own scrollbox", scroll["over"] <= 1, str(scroll))
+        check("in flow: every row is laid out", scroll["rows"] == 25, str(scroll))
+        check("in flow: the page scrolls instead", scroll["pageScrolls"], str(scroll))
+    else:
+        check("list overflows its panel", scroll["over"] > 200, str(scroll))
+        check("list actually scrolls", scroll["moved"] > 100, f"scrollTop={scroll['moved']}")
 
     # --- drag handle reorders ------------------------------------------------
     drag = d.execute_script("""

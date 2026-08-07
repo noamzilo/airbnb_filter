@@ -451,6 +451,67 @@ function ensurePanel() {
   document.body.appendChild(panelEl);
   return panelEl;
 }
+
+/* --- taking the card grid's place ---------------------------------------
+   The panel used to be a fixed overlay at z-index 9000 laid over Airbnb's
+   column. That always covered more than the cards: anything Airbnb draws in
+   that space — the search dropdown, menus — went under it. The fix is to stop
+   overlaying and start REPLACING: mount the panel where the card grid lives and
+   hide the grid, so we inherit the column's width and its place in Airbnb's own
+   stacking order. Their popovers then paint over us like they do over cards.
+
+   What must not happen is hiding too much. Climbing to the outermost element
+   that still excludes the map hides the whole column, and Airbnb reflows the map
+   to full width (measured: left 816 -> 0). So take the cards' lowest common
+   ancestor and nothing above it. */
+let hiddenGrid = null;
+function findCardGrid() {
+  const map = mapElement();
+  if (!map) return null;
+  const mr = map.getBoundingClientRect();
+  if (!mr.width) return null;
+  const cards = [...document.querySelectorAll('[itemprop="itemListElement"]')]
+    .filter((c) => {
+      const r = c.getBoundingClientRect();
+      return r.width && r.height && r.left < mr.left;
+    });
+  if (!cards.length) return null;
+  let lca = cards[0];
+  for (const c of cards.slice(1)) {
+    while (lca && !lca.contains(c)) lca = lca.parentElement;
+    if (!lca) return null;
+  }
+  // Never accept something that would take the map or the header with it.
+  if (lca === document.body || lca.contains(map)) return null;
+  const hdr = document.querySelector("header");
+  if (hdr && lca.contains(hdr)) return null;
+  return lca;
+}
+// Returns true if the panel is mounted in the column (in flow).
+function mountPanel() {
+  // findCardGrid only sees VISIBLE cards, so the moment we hide the grid it
+  // stops finding one. A fresh hit therefore means Airbnb has re-rendered the
+  // column and built a new grid; no hit means ours is still the current one.
+  const grid = findCardGrid();
+  if (grid) {
+    ensurePanel();
+    if (panelEl.previousElementSibling !== grid || panelEl.parentElement !== grid.parentElement) {
+      grid.parentElement.insertBefore(panelEl, grid);
+    }
+    if (hiddenGrid && hiddenGrid !== grid && document.contains(hiddenGrid)) {
+      hiddenGrid.style.removeProperty("display");
+    }
+    grid.style.display = "none";
+    hiddenGrid = grid;
+    return true;
+  }
+  if (hiddenGrid && document.contains(hiddenGrid) && panelEl &&
+      panelEl.parentElement === hiddenGrid.parentElement) {
+    hiddenGrid.style.display = "none";   // Airbnb sometimes clears the style back
+    return true;
+  }
+  return false;
+}
 // Bottom of Airbnb's top chrome — everything the panel must stay clear of.
 // The header's own box is not enough. Expanding the search bar does NOT grow the
 // header (measured: 152px either way); the expanded bar is position:absolute
@@ -504,6 +565,21 @@ function positionPanel() {
   if (!map) { if (panelEl) panelEl.style.display = "none"; return false; }
   const r = map.getBoundingClientRect();
   if (!r.width || r.left < 40) { if (panelEl) panelEl.style.display = "none"; return false; }
+
+  // Preferred: sit in the column in Airbnb's own flow. Nothing to position, and
+  // nothing of theirs ends up underneath us.
+  if (mountPanel()) {
+    panelEl.classList.remove("archiver-panel-overlay");
+    for (const p of ["top", "left", "width", "height"]) panelEl.style.removeProperty(p);
+    panelEl.style.display = "flex";
+    return true;
+  }
+  // Fallback: no card grid to replace (Airbnb markup changed, or the column
+  // hasn't rendered yet) — lay the old overlay over the column instead.
+  panelEl = ensurePanel();
+  if (panelEl.parentElement !== document.body) document.body.appendChild(panelEl);
+  if (hiddenGrid) { hiddenGrid.style.removeProperty("display"); hiddenGrid = null; }
+  panelEl.classList.add("archiver-panel-overlay");
   // Cover the results column and nothing above it. This used to sit at
   // `max(56, map.top - 96)` — a guess that landed 56px over a 152px-tall header
   // and covered the left half of the search bar. Take the cards' own top, and

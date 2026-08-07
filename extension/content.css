@@ -119,18 +119,26 @@
   background: #fff;
 }
 
-/* Curated panel that replaces Airbnb's results column. */
+/* Curated panel that replaces Airbnb's results column.
+   Default is the in-flow mode: the panel is mounted where Airbnb's card grid
+   was, so it takes the column's width from the column itself and, crucially,
+   creates no stacking context of its own — Airbnb's popovers (the search
+   dropdown, menus) paint over it exactly as their own cards would. The old
+   fixed overlay is kept as `.archiver-panel-overlay` for the case where the
+   card grid can't be found. */
 .archiver-panel {
-  position: fixed;
-  z-index: 9000;
   background: #fff;
-  border-right: 1px solid #e5e5e5;
-  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
   font: 13px sans-serif;
   color: #222;
+}
+.archiver-panel-overlay {
+  position: fixed;
+  z-index: 9000;
+  border-right: 1px solid #e5e5e5;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
 }
 .archiver-panel-head {
   display: flex;
@@ -175,6 +183,16 @@
   padding: 8px;
 }
 .archiver-panel-empty { padding: 32px 16px; text-align: center; color: #717171; }
+
+/* In flow the column itself scrolls, exactly as it did with Airbnb's cards, so
+   the list must not become its own scroll container. */
+.archiver-panel:not(.archiver-panel-overlay) .archiver-panel-list {
+  flex: none;
+  overflow-y: visible;
+  overscroll-behavior: auto;
+  padding: 8px 0;
+}
+.archiver-panel:not(.archiver-panel-overlay) .archiver-panel-head { padding: 10px 0; }
 
 /* One row per listing: square photo on the left, everything else on the right. */
 .archiver-row {

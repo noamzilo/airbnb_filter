@@ -228,8 +228,13 @@ tabs with live counts:
 - **★ Liked**, **? Maybe**, **🗑 Archived** — thumbnail, title, price, link to
   the listing, and a Remove/Unarchive button per row, newest first.
 - **"Show archived on map (greyed)"** toggle.
-- **"Rewrite search pages too (advanced)"** toggle *(present in markup, not yet
-  wired — see §3)*.
+- **"Rewrite search pages too (advanced)"** toggle — turns on whole-document
+  rewriting (see §3), with an inline explanation of the trade-off: archived
+  listings never flash, but a page handed back wrong breaks silently. Off is
+  safest; archived listings are filtered from searches either way.
+- Both toggles read their state from `settings` on open and write it through
+  `Store.setSetting`, so the background page picks the change up immediately via
+  `storage.onChanged` — no rebuild, no reload.
 - Version number in the header; re-renders live on any storage change.
 
 ---
@@ -305,9 +310,13 @@ Claude closes its own loop; see [docs/closing-the-loop.md](docs/closing-the-loop
 | `scripts/drive.py`, `recon_*.py` | ad-hoc live DOM/JSON recon |
 
 Known harness limit: Selenium's `install_addon` does **not** run the extension's
-content/background scripts here, so `content.js` is exercised by injection and
-the interceptor is covered by the Node tests — the live interceptor cannot be
-e2e'd via Selenium.
+content/background scripts, so `content.js` is exercised by *injecting* it with a
+stubbed store, and the rewrite logic is covered by the Node tests. The live
+interceptor is reachable only by launching Firefox on a **copy of the real
+profile** — where the add-on is already installed and enabled, so Firefox starts
+it normally, background script and all. That is what `repro_broken_page.py`,
+`test_cached_load.py`, and `test_startup_load.py` do; the original profile is
+only ever read.
 
 ---
 
@@ -323,3 +332,8 @@ e2e'd via Selenium.
   sideload policy); subsequent upgrades are silent.
 - **Map re-injection is off** (see §3) — a starred listing Airbnb drops from a
   response won't get a pin back, though it stays in the panel.
+- **Whole-page rewriting is opt-in, not missing** — the `rewriteDocuments` toggle
+  in the popup turns it on per-profile at any time. It stays off by default
+  because buffering a ~1.6 MB document and handing it back wrong breaks the page
+  silently, and archived listings are filtered from search XHRs either way; the
+  only thing it buys is that they never briefly flash on first paint.

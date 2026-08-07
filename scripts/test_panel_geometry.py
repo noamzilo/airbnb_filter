@@ -118,7 +118,44 @@ return {
   cardsVisible: visible.length,
   cardsPeekingAbovePanel: uncovered,
   searchBar, searchCovered,
+  // In-flow mode: the panel took the card grid's place rather than covering it.
+  inFlow: !p.classList.contains("archiver-panel-overlay"),
+  position: getComputedStyle(p).position,
+  mapLeft: (() => { const m = document.querySelector('[data-testid="map/GoogleMap"]')
+                         || document.querySelector('[aria-roledescription="map"]');
+                    return m ? Math.round(m.getBoundingClientRect().left) : null; })(),
 };
+"""
+
+# The contract that matters once the panel is in flow: it may overlap Airbnb's
+# chrome geometrically (the column scrolls under the sticky header, exactly as
+# their own cards do) but it must never PAINT over it. Hit-test the chrome and
+# assert nothing there resolves to the panel.
+CHROME_ON_TOP = """
+const p = document.querySelector(".archiver-panel");
+if (!p) return { samples: 0, panelOnTop: 0 };
+const pr = p.getBoundingClientRect();
+const boxes = [...document.querySelectorAll("header")]
+  .map(h => h.getBoundingClientRect()).filter(h => h.height && h.top <= 240);
+// the expanded search bar hangs past the header, so include it explicitly
+const sbtn = [...document.querySelectorAll("button")]
+  .find(b => /^Search$/.test((b.textContent||"").trim()) && b.getBoundingClientRect().width > 40);
+if (sbtn) {
+  let n = sbtn, best = sbtn;
+  for (let i = 0; i < 12 && n; i++) { const r = n.getBoundingClientRect(); if (r.width > 500) { best = n; break; } n = n.parentElement; }
+  boxes.push(best.getBoundingClientRect());
+}
+let samples = 0, panelOnTop = 0;
+for (const b of boxes) {
+  for (let y = Math.max(b.top + 3, 1); y < b.bottom - 2 && y < window.innerHeight; y += 6) {
+    for (let x = Math.max(b.left + 6, pr.left + 6); x < Math.min(b.right - 6, pr.right - 6); x += 40) {
+      samples++;
+      const el = document.elementFromPoint(x, y);
+      if (el && p.contains(el)) panelOnTop++;
+    }
+  }
+}
+return { samples, panelOnTop };
 """
 
 opts = Options()
@@ -178,20 +215,29 @@ try:
 
     m = state("as loaded")
     check("panel is showing", m.get("panel"), m)
+    # The core contract: replace Airbnb's card grid, don't overlay it.
+    check("panel is in flow, not a fixed overlay", m.get("inFlow"), m.get("position"))
+    check("panel sits in the column (map keeps its width)",
+          m.get("mapLeft") is not None and m["mapLeft"] > 40, m.get("mapLeft"))
+    check("Airbnb's own cards are hidden, not covered", m.get("cardsVisible") == 0,
+          m.get("cardsVisible"))
+    def chrome_check(label):
+        c = driver.execute_script(CHROME_ON_TOP)
+        check(f"{label}: panel never paints over Airbnb's chrome",
+              c["samples"] > 0 and c["panelOnTop"] == 0, c)
+
     if m.get("panel"):
-        check("panel does not overlap the header", m["headerOverlap"] is None, m["headerOverlap"])
+        chrome_check("as loaded")
         check("panel starts at or below the chrome", m["panelTop"] >= m["headerBottom"],
               f'top={m["panelTop"]} headerBottom={m["headerBottom"]}')
-        check("no Airbnb cards peek above the panel", m["cardsPeekingAbovePanel"] == 0,
-              m["cardsPeekingAbovePanel"])
 
     driver.execute_script("window.scrollTo(0, 600);")
     time.sleep(2)
     m = state("scrolled down 600px")
     if m.get("panel"):
-        check("scrolled: no header overlap", m["headerOverlap"] is None, m["headerOverlap"])
-        check("scrolled: no cards peek above the panel", m["cardsPeekingAbovePanel"] == 0,
-              m["cardsPeekingAbovePanel"])
+        # In flow the column scrolls UNDER the sticky header, so overlapping it is
+        # correct and expected -- what must hold is that the header paints on top.
+        chrome_check("scrolled")
 
     driver.execute_script("window.scrollTo(0, 0);")
     time.sleep(1)
@@ -208,15 +254,44 @@ try:
     m = state("search bar expanded")
     check("the search bar actually expanded", bool(m.get("searchBar")), m.get("searchBar"))
     if m.get("panel"):
-        check("expanded: panel does not overlap the header", m["headerOverlap"] is None, m["headerOverlap"])
+        # This is the regression the user reported twice: first the search bar
+        # itself, then the "Recent searches" dropdown that opens under it.
+        chrome_check("expanded")
         check("expanded: panel starts at or below the chrome", m["panelTop"] >= m["headerBottom"],
               f'top={m["panelTop"]} headerBottom={m["headerBottom"]}')
-        check("expanded: panel does not cover the search bar", m["searchCovered"] is None,
-              m["searchCovered"])
-        if m.get("searchBar"):
-            check("expanded: panel clears the search bar's overhang",
-                  m["panelTop"] >= m["searchBar"]["bottom"],
-                  f'top={m["panelTop"]} searchBottom={m["searchBar"]["bottom"]}')
+
+    # The dropdown that opens under the search bar hangs well down the page, over
+    # where the panel lives. It must win there too.
+    drop = driver.execute_script("""
+      const p = document.querySelector(".archiver-panel");
+      const pr = p.getBoundingClientRect();
+      // find a popover-looking box that overlaps the panel horizontally
+      let best = null;
+      for (const el of document.querySelectorAll("div,section,ul")) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 200 || r.height < 80) continue;
+        if (r.top < 150 || r.top > 400) continue;
+        if (r.left > pr.right || r.right < pr.left) continue;
+        const cs = getComputedStyle(el);
+        if (cs.position !== "absolute" && cs.position !== "fixed") continue;
+        if (p.contains(el)) continue;
+        if (!best || r.top < best.r.top) best = { el, r };
+      }
+      if (!best) return null;
+      const r = best.r;
+      const pts = [];
+      for (let y = r.top + 8; y < Math.min(r.bottom - 8, window.innerHeight - 2); y += 20) {
+        const x = Math.max(r.left + 20, pr.left + 20);
+        if (x > Math.min(r.right, pr.right) - 10) continue;
+        const hit = document.elementFromPoint(x, y);
+        pts.push(hit && p.contains(hit) ? "panel" : "airbnb");
+      }
+      return { rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+               pts, panelWins: pts.filter(v => v === "panel").length };
+    """)
+    print("\ndropdown over panel:", json.dumps(drop))
+    if drop and drop["pts"]:
+        check("the search dropdown paints over the panel", drop["panelWins"] == 0, drop)
     # chromeBottom() walks the header subtree on the 700ms backstop; make sure
     # that is cheap enough to run at that cadence.
     perf = driver.execute_script("""
