@@ -139,6 +139,48 @@ const Filter = {
     return m ? m[0] : "";
   },
 
+  /* Length-of-stay discount, read off the price breakdown.
+
+     Airbnb fixes the thresholds and the host sets the percentage. Verified live
+     rather than assumed (scripts/recon_thresh.py, run against two real
+     listings): nothing at 6 nights, a "Weekly stay discount" appearing at
+     exactly 7 and holding a constant percentage through 27, and a "Monthly stay
+     discount" replacing it at exactly 28.
+
+     A stay can carry more than one reduction at once (a 28-night quote showed
+     "Monthly stay discount" AND "Airbnb monthly stay savings"), so the saving is
+     measured as base minus price-after-discount. That captures every line
+     instead of just the first, and it is the number the guest actually keeps. */
+  DISCOUNT_MIN_NIGHTS: { weekly: 7, monthly: 28 },
+  discountOf(sdp) {
+    const groups = (sdp && sdp.explanationData && sdp.explanationData.priceDetails) || [];
+    let base = null, after = null, label = null;
+    for (const g of groups) {
+      for (const li of g.items || []) {
+        const d = li.description || "";
+        const v = Filter.parseMoney(li.priceString);
+        // The first plain line is what it would cost with no discount: either
+        // "N nights x $rate" or, on a monthly quote, "Average monthly price".
+        if (base == null && li.__typename === "DefaultExplanationLineItem" && v != null) base = v;
+        if (!label && li.__typename === "DiscountedExplanationLineItem") label = d;
+        if (li.__typename === "HighlightExplanationLineItem" || /after discount|^total\b/i.test(d)) {
+          if (v != null) after = v;
+        }
+      }
+    }
+    if (base == null || after == null || !(base > after)) return null;
+    const amount = Math.round((base - after) * 100) / 100;
+    const kind = /month/i.test(label || "") ? "monthly" : /week/i.test(label || "") ? "weekly" : null;
+    return {
+      label: label || "Discount",
+      kind,
+      minNights: kind ? Filter.DISCOUNT_MIN_NIGHTS[kind] : null,
+      amount,
+      base,
+      pct: Math.round((amount / base) * 100),
+    };
+  },
+
   // Normalised price for a listing: { monthly, nightly, total, nights, symbol,
   // original, basis }. Airbnb quotes cards three different ways depending on the
   // search - a stay total ("$564 for 14 nights"), a nightly rate, or a monthly
@@ -156,12 +198,13 @@ const Filter = {
     if (amount == null) return null;
     const symbol = Filter.currencyOf(priceStr);
     const original = pl.originalPrice ? Filter.parseMoney(pl.originalPrice) : null;
+    const discount = Filter.discountOf(sdp);
 
     // A monthly-stay search already quotes a per-month figure; treat it as the
     // 30-night price directly (a calendar month is within ~1.5% of 30 nights).
     if (/month/i.test(pl.qualifier || "") || sdp.displayPriceStyle === "MONTHLY") {
       return {
-        symbol, original, basis: "monthly", nights: null, total: null,
+        symbol, original, discount, basis: "monthly", nights: null, total: null,
         nightly: Math.round((amount / 30) * 100) / 100,
         monthly: Math.round(amount),
         label,
@@ -189,7 +232,7 @@ const Filter = {
     else if (/night/i.test(pl.qualifier || label)) { nightly = amount; basis = "nightly"; }
 
     return {
-      symbol, nights, total, original, basis,
+      symbol, nights, total, original, discount, basis,
       nightly: nightly != null ? Math.round(nightly * 100) / 100 : null,
       monthly: nightly != null ? Math.round(nightly * 30) : null,
       label,
@@ -305,6 +348,70 @@ const Filter = {
     if (km < 0.995) return Math.max(10, Math.round(km * 100) * 10) + " m";
     if (km < 9.95) return (Math.round(km * 10) / 10).toFixed(1) + " km";
     return Math.round(km) + " km";
+  },
+
+  /* ---- address -> coordinates, via Airbnb's own place search ----
+     Typing an address like in Google Maps needs a geocoder, and nothing may
+     leave the browser except requests to airbnb.com. Airbnb's own search box
+     is a geocoder: its suggestions endpoint matches street addresses
+     (Google-backed, verified live with scripts/recon_autocomplete.py), and a
+     suggestion's place_id resolves to coordinates through one search-page
+     fetch, whose mapBoundsHint is centred on the place ("precision":"street").
+     Two hops, both to airbnb.com. */
+
+  // Airbnb's public web client key, the same one every airbnb.com page embeds.
+  AUTOCOMPLETE_KEY: "d306zoyjsyarp7ifhu67rjxn52tv0t20",
+
+  // The suggestions request. This is the minimal param set the endpoint
+  // accepts (verified anonymously): the captured browser request also carries
+  // a satori_config_token and personalisation params, none of them required.
+  autocompleteUrl(origin, input) {
+    const q = new URLSearchParams({
+      key: Filter.AUTOCOMPLETE_KEY,
+      locale: "en", language: "en",
+      num_results: "5",
+      user_input: String(input || ""),
+      api_version: "1.2.0",
+      options: "simple_search",
+    });
+    return (origin || "https://www.airbnb.com") + "/api/v2/autocompletes-personalized?" + q.toString();
+  },
+
+  // [{name, query, placeId}] out of the suggestions response.
+  placesOf(json) {
+    const out = [];
+    for (const t of (json && json.autocomplete_terms) || []) {
+      if (t.suggestion_type && t.suggestion_type !== "LOCATION") continue;
+      const esp = t.explore_search_params || {};
+      const name = t.display_name || esp.query;
+      if (!name) continue;
+      out.push({ name, query: esp.query || name, placeId: esp.place_id || null });
+    }
+    return out;
+  },
+
+  // The search-page fetch that turns a picked suggestion into coordinates.
+  // archiver_probe=1 keeps our own interceptor's hands off it.
+  placeSearchUrl(origin, query, placeId) {
+    const q = new URLSearchParams();
+    q.set("query", String(query || ""));
+    if (placeId) q.set("place_id", placeId);
+    q.append("refinement_paths[]", "/homes");
+    q.set("archiver_probe", "1");
+    return (origin || "https://www.airbnb.com") + "/s/homes?" + q.toString();
+  },
+
+  // Centre of the geocoded viewport in a search page's HTML: the place the
+  // query resolved to. Null when the page carries no bounds (geocode failed).
+  boundsCenterFromHtml(html) {
+    const m = String(html).match(
+      /"mapBoundsHint"\s*:\s*\{[^{}]*"northeast"\s*:\s*\{[^}]*?"latitude"\s*:\s*(-?\d+(?:\.\d+)?)[^}]*?"longitude"\s*:\s*(-?\d+(?:\.\d+)?)[^}]*\}[^{}]*"southwest"\s*:\s*\{[^}]*?"latitude"\s*:\s*(-?\d+(?:\.\d+)?)[^}]*?"longitude"\s*:\s*(-?\d+(?:\.\d+)?)/
+    );
+    if (!m) return null;
+    const lat = (parseFloat(m[1]) + parseFloat(m[3])) / 2;
+    const lng = (parseFloat(m[2]) + parseFloat(m[4])) / 2;
+    return isFinite(lat) && isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180
+      ? { lat, lng } : null;
   },
 
   // A search scoped to a tiny box around one listing - this is how a saved

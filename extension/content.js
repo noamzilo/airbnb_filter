@@ -655,10 +655,117 @@ function ensurePanel() {
   head.append(title, count, collapseAll, scope);
   const list = document.createElement("div"); list.className = "archiver-panel-list";
   list.addEventListener("scroll", syncScrollbar, { passive: true });
-  panelEl.append(head, list);
+  panelEl.append(head, buildPlaceBar(), list);
   document.body.appendChild(panelEl);
   ensureScrollbar();
+  syncPlaceBar();
   return panelEl;
+}
+
+/* --- distance from your place --------------------------------------------
+   A search box above the list, like Booking's "distance from" but typed like
+   Google Maps: address in, suggestions out (Airbnb's own geocoder, see
+   Filter.autocompleteUrl - nothing leaves the browser except airbnb.com),
+   pick one and every row shows how far it is. Pasted coordinates or a Google
+   Maps link work in the same box. Built once with the panel and never
+   rebuilt, so a re-render can't eat what you're typing. */
+function buildPlaceBar() {
+  const bar = document.createElement("div"); bar.className = "archiver-placebar";
+  const pin = document.createElement("span"); pin.className = "archiver-placebar-pin"; pin.textContent = "📍";
+  const input = document.createElement("input");
+  input.type = "text"; input.className = "archiver-place-input";
+  input.placeholder = "Distance from: type an address…";
+  const clear = document.createElement("button");
+  clear.type = "button"; clear.className = "archiver-place-clear"; clear.textContent = "✕";
+  clear.title = "Stop showing distances";
+  const drop = document.createElement("div"); drop.className = "archiver-place-drop"; drop.hidden = true;
+  bar.append(pin, input, clear, drop);
+
+  const closeDrop = () => { drop.hidden = true; drop.textContent = ""; };
+  const showMsg = (text) => {
+    drop.hidden = false; drop.textContent = "";
+    const m = document.createElement("div"); m.className = "archiver-place-msg"; m.textContent = text;
+    drop.appendChild(m);
+  };
+
+  // sug: {name, coord} for pasted coordinates, {name, query, placeId} from
+  // Airbnb. The place_id fetch is one ~800 KB search page, paid once per
+  // place set, never per keystroke.
+  const choose = async (sug) => {
+    input.value = sug.name;
+    if (sug.coord) { closeDrop(); await Store.setSetting("refPlace", { ...sug.coord, raw: sug.name }); return; }
+    showMsg("Locating…");
+    try {
+      const html = await fetch(Filter.placeSearchUrl(location.origin, sug.query, sug.placeId),
+        { credentials: "include" }).then((r) => r.text());
+      const c = Filter.boundsCenterFromHtml(html);
+      if (!c) { showMsg("Airbnb couldn't pin that down. Try adding the city."); return; }
+      closeDrop();
+      await Store.setSetting("refPlace", { lat: c.lat, lng: c.lng, raw: sug.name });
+    } catch (_) { showMsg("Couldn't reach Airbnb to look that up."); }
+  };
+
+  let current = [];   // what Enter picks the first of
+  let seq = 0;        // stamps requests so a slow reply can't paint over a newer one
+  const suggest = debounce(async () => {
+    const text = input.value.trim();
+    if (!text) { current = []; closeDrop(); return; }
+    let sugs;
+    const coord = typeof Filter !== "undefined" ? Filter.parsePlace(text) : null;
+    if (coord) {
+      sugs = [{ name: coord.lat.toFixed(5) + ", " + coord.lng.toFixed(5), coord }];
+    } else {
+      const mine = ++seq;
+      try {
+        const j = await fetch(Filter.autocompleteUrl(location.origin, text),
+          { credentials: "include" }).then((r) => r.json());
+        if (mine !== seq) return;
+        sugs = Filter.placesOf(j);
+      } catch (_) { sugs = []; }
+      if (document.activeElement !== input) return;   // answer arrived after they left
+    }
+    current = sugs;
+    if (!sugs.length) { showMsg("No places match that."); return; }
+    drop.hidden = false; drop.textContent = "";
+    for (const s of sugs) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "archiver-place-sug"; b.textContent = s.name;
+      // pointerdown, not click: the input's blur would close the dropdown
+      // before a click ever landed.
+      b.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); choose(s); });
+      drop.appendChild(b);
+    }
+  }, 300);
+
+  input.addEventListener("input", suggest);
+  input.addEventListener("keydown", (e) => {
+    // Airbnb's page-level shortcuts must not fire while typing an address.
+    e.stopPropagation();
+    if (e.key === "Enter" && current.length) { e.preventDefault(); choose(current[0]); }
+    if (e.key === "Escape") closeDrop();
+  });
+  input.addEventListener("blur", () => setTimeout(closeDrop, 200));
+  input.addEventListener("focus", () => { if (input.value.trim()) suggest(); });
+  clear.addEventListener("pointerdown", (e) => e.stopPropagation());
+  clear.addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    input.value = ""; current = []; closeDrop();
+    Store.setSetting("refPlace", null);
+  });
+  return bar;
+}
+
+// Reflect the stored place in the bar. Never touches the input while it has
+// focus: the storage echo of a save must not yank the text being typed.
+function syncPlaceBar() {
+  const bar = panelEl && panelEl.querySelector(".archiver-placebar");
+  if (!bar) return;
+  const input = bar.querySelector(".archiver-place-input");
+  const clear = bar.querySelector(".archiver-place-clear");
+  clear.style.display = refPlace ? "" : "none";
+  if (document.activeElement !== input) {
+    input.value = refPlace ? (refPlace.raw || refPlace.lat + ", " + refPlace.lng) : "";
+  }
 }
 
 /* --- the list's scrollbar ------------------------------------------------
@@ -1145,8 +1252,17 @@ function priceText(id) {
   if (price && price.monthly != null) {
     const st = currentStay();
     const bits = [];
-    if (price.basis === "monthly") bits.push("Airbnb monthly rate");
-    if (price.original != null && price.original > price.monthly) bits.push("was " + fmtMoney(price.symbol, price.original));
+    // What the discount actually is: from how many nights it starts, what
+    // percentage it takes off, and what that is in money. "Airbnb monthly rate"
+    // used to sit here and said none of that.
+    const dsc = price.discount;
+    if (dsc && dsc.pct > 0) {
+      bits.push((dsc.minNights ? dsc.minNights + "+ nights: " : "")
+        + dsc.pct + "% off, saves " + fmtMoney(price.symbol, dsc.amount));
+    } else if (price.original != null && price.original > price.monthly) {
+      // No breakdown to read (an older cached quote): at least say it is reduced.
+      bits.push("reduced from " + fmtMoney(price.symbol, price.original));
+    }
     return {
       head: fmtMoney(price.symbol, price.monthly),
       unit: "/ 30 nights",
@@ -1547,6 +1663,7 @@ function updateHead(g) {
       : `Show all ${g.total} listings, including other cities`;
     scope.classList.toggle("on", showAllPlaces);
   }
+  syncPlaceBar();
 }
 // Refresh a row's live bits without touching the DOM the user is interacting
 // with (carousel position, note caret).

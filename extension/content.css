@@ -169,6 +169,75 @@
 .archiver-collapse-all.on { color: #fff; background: #2f80ed; border-color: #2f80ed; }
 .archiver-collapse-all:disabled { opacity: 0.45; cursor: default; }
 
+/* "Distance from" bar between the header and the list: type an address, pick a
+   suggestion, every row shows how far it is. The dropdown hangs off the bar,
+   over the top of the list. */
+.archiver-placebar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 8px;
+  border-bottom: 1px solid #eee;
+  flex: none;
+}
+/* The overlay fallback panel pads its content 14px; match it. */
+.archiver-panel-overlay .archiver-placebar { padding: 0 14px 8px; }
+.archiver-placebar-pin { flex: none; font-size: 13px; }
+.archiver-place-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 9px;
+  font: 12px sans-serif;
+  color: #222;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+}
+.archiver-place-input:focus { outline: none; border-color: #2f80ed; }
+.archiver-place-clear {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font: 600 11px sans-serif;
+  line-height: 20px;
+  color: #555;
+  background: #f0f0f0;
+  border: 1px solid #ddd;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.archiver-place-clear:hover { background: #e6e6e6; color: #222; }
+.archiver-place-drop {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  margin-top: 2px;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14);
+  overflow: hidden;
+}
+.archiver-place-sug {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  font: 12px sans-serif;
+  color: #222;
+  text-align: left;
+  background: #fff;
+  border: none;
+  border-bottom: 1px solid #f3f3f3;
+  cursor: pointer;
+}
+.archiver-place-sug:last-child { border-bottom: none; }
+.archiver-place-sug:hover { background: #f2f2f2; }
+.archiver-place-msg { padding: 8px 10px; font: 12px sans-serif; color: #717171; }
+
 /* Separates "on this map" rows from unplaced / elsewhere counts. */
 .archiver-divider {
   margin: 6px 2px 10px;
@@ -318,7 +387,8 @@
    compare listings; this is the number you would really pay, so it gets its own
    line rather than being buried in the sub-line. */
 .archiver-row-stay { font: 600 13px sans-serif; color: #222; }
-.archiver-row-sub { font-size: 12px; color: #6a6a6a; }
+/* The discount line: worth reading, so not the same grey as everything else. */
+.archiver-row-sub { font-size: 12px; color: #1a7f4b; font-weight: 600; }
 /* Straight-line distance to the reference place set in the popup. */
 .archiver-row-dist { font: 600 12px sans-serif; color: #00695c; }
 

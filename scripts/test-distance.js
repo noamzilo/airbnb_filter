@@ -69,5 +69,47 @@ check("whole km beyond 10", Filter.fmtDistance(23.4) === "23 km", Filter.fmtDist
 check("9.96 promotes to 10 km", Filter.fmtDistance(9.96) === "10 km", Filter.fmtDistance(9.96));
 check("null / negative is empty", Filter.fmtDistance(null) === "" && Filter.fmtDistance(-1) === "");
 
+/* ---- address -> coordinates via Airbnb's own place search ---- */
+// Fixtures are the real shapes captured live by scripts/recon_autocomplete.py
+// (suggestions) and a real /s/homes?place_id=... fetch (mapBoundsHint).
+
+const u = Filter.autocompleteUrl("https://www.airbnb.com", "Mariscal Lopez 3374");
+check("autocomplete URL hits airbnb and carries the input",
+  u.startsWith("https://www.airbnb.com/api/v2/autocompletes-personalized?")
+  && u.includes("user_input=Mariscal+Lopez+3374") && u.includes("key="), u);
+
+const AC = {
+  autocomplete_terms: [
+    { id: "a", suggestion_type: "LOCATION", display_name: "Avenida Mariscal López 3374, Asunción",
+      explore_search_params: { query: "Avenida Mariscal López 3374, Asunción, Paraguay", place_id: "PLACE_A" } },
+    { id: "b", suggestion_type: "PROPERTY", display_name: "Some listing",
+      explore_search_params: { query: "x", place_id: "y" } },
+    { id: "c", suggestion_type: "LOCATION", display_name: "",
+      explore_search_params: {} },
+  ],
+};
+const places = Filter.placesOf(AC);
+check("suggestions parsed: LOCATION rows only, empty names dropped",
+  places.length === 1 && places[0].name === "Avenida Mariscal López 3374, Asunción"
+  && places[0].placeId === "PLACE_A", JSON.stringify(places));
+check("empty / malformed response gives []", Filter.placesOf({}).length === 0 && Filter.placesOf(null).length === 0);
+
+const su = Filter.placeSearchUrl("https://www.airbnb.com", places[0] && places[0].query, "PLACE_A");
+check("place-search URL carries query + place_id and skips our interceptor",
+  su.includes("place_id=PLACE_A") && su.includes("archiver_probe=1") && su.includes("query="), su);
+
+// The exact shape of the live page (captured 2026-08-08). Centre of these
+// bounds is the geocoded street address.
+const BOUNDS = '<script>x={"mapBoundsHint":{"__typename":"MapBounds",'
+  + '"northeast":{"__typename":"Coordinate","latitude":-25.274089530501843,"longitude":-57.57477220147849},'
+  + '"southwest":{"__typename":"Coordinate","latitude":-25.31292748665088,"longitude":-57.60940454900263}},'
+  + '"mapMode":"DEFAULT"}</script>';
+const c = Filter.boundsCenterFromHtml(BOUNDS);
+check("bounds centre read off the search page",
+  c && near(c.lat, -25.29351, 0.0001) && near(c.lng, -57.59209, 0.0001), JSON.stringify(c));
+check("page with no bounds gives null",
+  Filter.boundsCenterFromHtml("<html>no map here</html>") === null
+  && Filter.boundsCenterFromHtml("") === null);
+
 console.log(fails ? `\n${fails} FAILED` : "\nALL PASS");
 process.exit(fails ? 1 : 0);

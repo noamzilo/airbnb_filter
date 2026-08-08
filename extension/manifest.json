@@ -1,8 +1,9 @@
 {
   "manifest_version": 2,
-  "name": "Airbnb Archiver (Beta)",
-  "version": "0.1.26",
-  "description": "BETA - still undergoing testing. Archive Airbnb listings so they stop reappearing on the map and in results, plus star/maybe lists for the ones you're considering.",
+  "name": "OneBNB: Airbnb Prices, Shortlist & Chat",
+  "version": "0.1.27",
+  "description": "Your whole Airbnb search on one screen: true nightly prices, hide what you've ruled out, star and note the rest, and chat without leaving the results. Beta, under active development. Unofficial: not affiliated with Airbnb, Inc.",
+  "homepage_url": "https://github.com/noamzilo/airbnb_filter",
   "browser_specific_settings": {
     "gecko": {
       "id": "airbnb-archiver@noam.local",
@@ -43,8 +44,9 @@
     }
   ],
   "icons": {
-    "48": "icon.svg",
-    "96": "icon.svg"
+    "48": "icon-48.png",
+    "96": "icon-96.png",
+    "128": "icon-128.png"
   },
   "browser_action": {
     "default_title": "Airbnb Archiver",

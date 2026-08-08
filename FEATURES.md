@@ -20,7 +20,7 @@ Firefox, airbnb.com only, nothing leaves your browser.
 | Favourites in no order | Rank your own favorites |
 | A heart is your only verdict | ★ Liked and ? Maybe |
 | The price you saved is out of date | Re-checked live |
-| "Is that far from work?", asked of every single flat | Pin your place once and every flat says how far it is, like Booking does |
+| "Is that far from work?", asked of every single flat | Type your address in the box above the list, pick it from the suggestions, and every flat says how far it is, like Booking does |
 
 ### Worth knowing
 

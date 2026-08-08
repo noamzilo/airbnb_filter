@@ -242,7 +242,44 @@ try:
     """)
     check("shows price per 30 nights", "$1,935" in row["head"] and "30 nights" in row["head"], str(row))
     check("ALSO shows price per night", "$65" in row["per"] and "night" in row["per"], str(row))
-    check("keeps the monthly-rate context", "monthly rate" in row["sub"] and "was $2,662" in row["sub"], str(row))
+    # This line used to read "Airbnb monthly rate  ·  was $2,662", which says
+    # nothing you can act on: not what triggers the discount, not how big it is.
+    check("no useless 'monthly rate' wording", "monthly rate" not in row["sub"], str(row))
+    check("an un-itemised reduction still says it is reduced",
+          "reduced from $2,662" in row["sub"], str(row))
+
+    # --- what the discount actually is ---------------------------------------
+    # From how many nights it starts, what percentage it takes off, and what that
+    # is in money. Thresholds verified live (scripts/recon_thresh.py): nothing at
+    # 6 nights, weekly at exactly 7, monthly at exactly 28.
+    d.execute_script("""
+      window.__prices={P1:{symbol:'$',monthly:1128,nightly:37.6,total:330.65,nights:11,basis:'stay',
+        discount:{label:'Weekly stay discount',kind:'weekly',minNights:7,amount:58.35,base:389,pct:15},
+        ctx:'',probedAt:Date.now()}};
+      window.__ls.forEach(f=>f({prices:{}}));
+    """); time.sleep(0.6)
+    sub = d.execute_script("const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='P1'); return r.querySelector('.archiver-row-sub').textContent;")
+    check("discount says from how many nights", "7+ nights" in sub, repr(sub))
+    check("discount says the percentage", "15% off" in sub, repr(sub))
+    check("discount says the money", "saves $58" in sub, repr(sub))
+
+    d.execute_script("""
+      window.__prices={P1:{symbol:'$',monthly:781,nightly:26,total:728.55,nights:28,basis:'stay',
+        discount:{label:'Monthly stay discount',kind:'monthly',minNights:28,amount:195.45,base:924,pct:21},
+        ctx:'',probedAt:Date.now()}};
+      window.__ls.forEach(f=>f({prices:{}}));
+    """); time.sleep(0.6)
+    sub = d.execute_script("const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='P1'); return r.querySelector('.archiver-row-sub').textContent;")
+    check("a monthly discount reports its own threshold",
+          "28+ nights" in sub and "21% off" in sub and "saves $195" in sub, repr(sub))
+
+    d.execute_script("""
+      window.__prices={P1:{symbol:'$',monthly:1065,nightly:35.5,total:213,nights:6,basis:'stay',
+        discount:null,ctx:'',probedAt:Date.now()}};
+      window.__ls.forEach(f=>f({prices:{}}));
+    """); time.sleep(0.6)
+    sub = d.execute_script("const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='P1'); return r.querySelector('.archiver-row-sub').textContent;")
+    check("no discount -> the line claims none", sub.strip() == "", repr(sub))
 
     # --- the list scrolls ----------------------------------------------------
     d.execute_script("""
@@ -498,6 +535,52 @@ try:
     d.execute_script("window.__settings.refPlace=null; window.__ls.forEach(f=>f({settings:{}}));"); time.sleep(0.8)
     check("clearing the place hides every distance", d.execute_script(
         "return [...document.querySelectorAll('.archiver-row-dist')].every(e=>e.style.display==='none'&&e.textContent==='')"))
+
+    # --- the place bar: type an address like on Google Maps -----------------
+    # Suggestions and geocoding go through Airbnb's own endpoints, live here on
+    # purpose: this is the whole feature, and it must survive Airbnb's side.
+    bar = d.execute_script("""
+      const b=document.querySelector('.archiver-placebar');
+      return {present:!!b,
+              aboveList: b? !!b.nextElementSibling && b.nextElementSibling.classList.contains('archiver-panel-list'):false,
+              clearHidden: b? b.querySelector('.archiver-place-clear').style.display==='none':null};
+    """)
+    check("place bar sits between the header and the list", bar["present"] and bar["aboveList"], str(bar))
+    check("no place set -> no clear button", bar["clearHidden"] is True, str(bar))
+    d.execute_script("""
+      const i=document.querySelector('.archiver-place-input');
+      i.focus(); i.value='Avenida Mariscal Lopez 3374, Asuncion';
+      i.dispatchEvent(new Event('input',{bubbles:true}));
+    """)
+    sugs = []
+    for _ in range(24):
+        time.sleep(0.5)
+        sugs = d.execute_script("return [...document.querySelectorAll('.archiver-place-sug')].map(b=>b.textContent)")
+        if sugs: break
+    check("typing an address brings live suggestions", bool(sugs), str(sugs))
+    if sugs:
+        d.execute_script(
+            "document.querySelector('.archiver-place-sug')"
+            ".dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true}))")
+        rp = None
+        for _ in range(40):
+            time.sleep(0.5)
+            rp = d.execute_script("return (window.__settings.refPlace)||null")
+            if rp: break
+        check("picking a suggestion geocodes to real coordinates near Asuncion",
+              bool(rp) and abs(rp["lat"] + 25.29) < 0.2 and abs(rp["lng"] + 57.6) < 0.2, str(rp))
+        time.sleep(1.0)
+        check("rows then show their distance from it", d.execute_script(
+            "return [...document.querySelectorAll('.archiver-row-dist')]"
+            ".some(e=>e.style.display!=='none' && /(km|m) from your place/.test(e.textContent))"))
+        check("the bar shows the picked place and a clear button", d.execute_script(
+            "const b=document.querySelector('.archiver-placebar');"
+            "return b.querySelector('.archiver-place-input').value.length>0"
+            " && b.querySelector('.archiver-place-clear').style.display!=='none'"))
+        d.execute_script("document.querySelector('.archiver-place-clear').click()"); time.sleep(0.8)
+        check("the x forgets the place", d.execute_script(
+            "return !window.__settings.refPlace"
+            " && [...document.querySelectorAll('.archiver-row-dist')].every(e=>e.style.display==='none')"))
 
     d.execute_script("window.__settings.showAllPlaces=false; window.__ls.forEach(f=>f({settings:{}}));"); time.sleep(0.5)
 

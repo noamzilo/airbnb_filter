@@ -102,6 +102,68 @@ check("nightly -> 30 nights", p.monthly === 3600, JSON.stringify(p));
 check("no price line", Filter.priceOf({}) === null);
 check("garbage price", Filter.priceOf({ structuredDisplayPrice: { primaryLine: { price: "-" } } }) === null);
 
+/* ---- length-of-stay discounts ----
+   Shapes captured verbatim from live searches (scripts/recon_disc.py,
+   recon_thresh.py). The thresholds are Airbnb's, verified by probing the same
+   listing across lengths: nothing at 6 nights, weekly at exactly 7, monthly at
+   exactly 28. */
+const weeklyStay = {
+  structuredDisplayPrice: {
+    displayPriceStyle: "TOTAL_ONLY",
+    primaryLine: { accessibilityLabel: "$331 for 11 nights, originally $389",
+      discountedPrice: "$331", originalPrice: "$389", qualifier: "for 11 nights" },
+    explanationData: { priceDetails: [
+      { items: [
+        { __typename: "DefaultExplanationLineItem", description: "11 nights x $35.36", priceString: "$389.00" },
+        { __typename: "DiscountedExplanationLineItem", description: "Weekly stay discount", priceString: "-$58.35" },
+      ] },
+      { items: [{ __typename: "HighlightExplanationLineItem", description: "Price after discount", priceString: "$330.65" }] },
+    ] },
+  },
+};
+p = Filter.priceOf(weeklyStay);
+check("weekly discount found", !!p.discount, JSON.stringify(p.discount));
+check("weekly discount starts at 7 nights", p.discount.minNights === 7 && p.discount.kind === "weekly");
+check("weekly discount money", eq(p.discount.amount, 58.35), String(p.discount.amount));
+check("weekly discount percent", p.discount.pct === 15, String(p.discount.pct));
+
+// A 28-night quote carried TWO reductions, so the saving must be measured as
+// base minus price-after-discount, not just the first discount line.
+const monthlyStayShape = {
+  structuredDisplayPrice: {
+    displayPriceStyle: "TOTAL_ONLY",
+    primaryLine: { accessibilityLabel: "$729 for 28 nights", price: "$729", qualifier: "for 28 nights" },
+    explanationData: { priceDetails: [
+      { items: [
+        { __typename: "DefaultExplanationLineItem", description: "Average monthly price", priceString: "$924.00" },
+        { __typename: "DiscountedExplanationLineItem", description: "Monthly stay discount", priceString: "-$172.14" },
+        { __typename: "DiscountedExplanationLineItem", description: "Airbnb monthly stay savings", priceString: "-$23.31" },
+      ] },
+      { items: [{ __typename: "HighlightExplanationLineItem", description: "Price after discount", priceString: "$728.55" }] },
+    ] },
+  },
+};
+p = Filter.priceOf(monthlyStayShape);
+check("monthly discount starts at 28 nights", p.discount.minNights === 28 && p.discount.kind === "monthly");
+check("counts every reduction, not just the first", eq(p.discount.amount, 195.45), String(p.discount.amount));
+check("monthly discount percent", p.discount.pct === 21, String(p.discount.pct));
+
+// No discount at all -> nothing to report (6 nights, verified live).
+const noDiscount = {
+  structuredDisplayPrice: {
+    primaryLine: { accessibilityLabel: "$213 for 6 nights", price: "$213", qualifier: "for 6 nights" },
+    explanationData: { priceDetails: [
+      { items: [{ __typename: "DefaultExplanationLineItem", description: "6 nights x $35.50", priceString: "$213.00" }] },
+    ] },
+  },
+};
+check("no discount line -> no discount reported", Filter.priceOf(noDiscount).discount === null);
+check("discountOf tolerates a missing breakdown", Filter.discountOf({}) === null && Filter.discountOf(null) === null);
+// A monthly-mode search reaches priceOf by a different branch; it must report too.
+check("monthly-mode search still reports its discount",
+  Filter.priceOf(monthly).discount && Filter.priceOf(monthly).discount.kind === "monthly",
+  JSON.stringify(Filter.priceOf(monthly).discount));
+
 /* ---- probe plumbing ---- */
 const MONTHLY_SEARCH = "?adults=1&refinement_paths%5B%5D=%2Fhomes&flexible_trip_lengths%5B%5D=one_month"
   + "&monthly_start_date=2026-09-01&monthly_length=3&monthly_end_date=2026-12-01"

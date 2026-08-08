@@ -145,22 +145,45 @@ they were.
 
 Booking.com's "X km from your chosen point", rebuilt from data already on hand:
 every tagged listing has a coordinate (`tagCoords` / the snapshot), so the only
-missing piece is the reference point. It is set in the popup
-(`settings.refPlace = {lat, lng, raw}`), and each row then shows the
+missing piece is the reference point. It lives in
+`settings.refPlace = {lat, lng, raw}`, and each row then shows the
 great-circle distance (`Filter.distanceKm`, haversine) formatted at the
 precision people read distances at (`Filter.fmtDistance`: 10 m under a
 kilometre, one decimal under ten, whole km beyond).
 
-**No geocoding on purpose**: nothing may leave the browser except requests to
-airbnb.com, so an address can't be looked up. Instead `Filter.parsePlace`
-reads coordinates out of whatever the user pastes: plain "lat, lng" (what
-Google Maps' right-click "copy coordinates" gives), a Maps place link (the
-`!3d<lat>!4d<lng>` pair, preferred over `@` which is only the camera), an
-`@lat,lng` camera URL, or a `q=`/`ll=`/`destination=` param. `0,0` is
-rejected as a parse accident. A listing with no coordinate shows no distance
-line at all: saying nothing beats guessing. Covered by
-`scripts/test-distance.js` (pure) and the distance block in
-`test_decorator.py` (rendered rows).
+**Set from the place bar** between the panel header and the list: type an
+address the way you would in Google Maps, pick a suggestion, done. The bar is
+built once with the panel and never rebuilt, so a re-render can't eat what's
+being typed; `syncPlaceBar()` reflects the stored place but never touches a
+focused input. Suggestion buttons act on `pointerdown`, because the input's
+blur closes the dropdown before any `click` could land. The popup carries a
+paste-only box for the same setting.
+
+**No third-party geocoder**: nothing may leave the browser except requests to
+airbnb.com, so the address lookup is *Airbnb's own* place search, two hops
+(verified live, `scripts/recon_autocomplete.py`):
+
+1. `Filter.autocompleteUrl` → `/api/v2/autocompletes-personalized`, the
+   endpoint behind Airbnb's search box (Google-backed, matches street
+   addresses). Works anonymously with the public web key every airbnb.com page
+   embeds; the captured satori/personalisation params are not required.
+   `Filter.placesOf` keeps the `LOCATION` suggestions.
+2. A suggestion carries a `place_id` but no coordinates, so picking one
+   fetches `/s/homes?query=…&place_id=…` (tagged `archiver_probe=1` so our
+   interceptor skips it) and `Filter.boundsCenterFromHtml` takes the centre of
+   the page's `mapBoundsHint`, which is the geocoded point
+   (`"precision":"street"`). One ~800 KB fetch per place *set*, never per
+   keystroke.
+
+`Filter.parsePlace` still short-circuits the whole flow for pasted
+coordinates or Google Maps links: plain "lat, lng" (what Maps' right-click
+"copy coordinates" gives), the `!3d<lat>!4d<lng>` pair of a place link
+(preferred over `@`, which is only the camera), an `@lat,lng` camera URL, or a
+`q=`/`ll=`/`destination=` param. `0,0` is rejected as a parse accident. A
+listing with no coordinate on record shows no distance line at all: saying
+nothing beats guessing. Covered by `scripts/test-distance.js` (pure, real
+captured fixtures) and the distance + place-bar blocks in `test_decorator.py`
+(live: typed address → real suggestions → real geocode → rendered rows).
 
 ### Re-render discipline
 
