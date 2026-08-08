@@ -157,3 +157,4 @@ amo.env
 
 # Python bytecode from the recon/test scripts
 __pycache__/
+scratch_*.html
