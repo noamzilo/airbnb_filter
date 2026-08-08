@@ -141,6 +141,27 @@ global order with just the visible ids. `commitOrder()` splices the new visible
 sequence into the slots those rows occupied, leaving off-screen listings where
 they were.
 
+### Distance from your place
+
+Booking.com's "X km from your chosen point", rebuilt from data already on hand:
+every tagged listing has a coordinate (`tagCoords` / the snapshot), so the only
+missing piece is the reference point. It is set in the popup
+(`settings.refPlace = {lat, lng, raw}`), and each row then shows the
+great-circle distance (`Filter.distanceKm`, haversine) formatted at the
+precision people read distances at (`Filter.fmtDistance`: 10 m under a
+kilometre, one decimal under ten, whole km beyond).
+
+**No geocoding on purpose**: nothing may leave the browser except requests to
+airbnb.com, so an address can't be looked up. Instead `Filter.parsePlace`
+reads coordinates out of whatever the user pastes: plain "lat, lng" (what
+Google Maps' right-click "copy coordinates" gives), a Maps place link (the
+`!3d<lat>!4d<lng>` pair, preferred over `@` which is only the camera), an
+`@lat,lng` camera URL, or a `q=`/`ll=`/`destination=` param. `0,0` is
+rejected as a parse accident. A listing with no coordinate shows no distance
+line at all: saying nothing beats guessing. Covered by
+`scripts/test-distance.js` (pure) and the distance block in
+`test_decorator.py` (rendered rows).
+
 ### Re-render discipline
 
 Three layers, all in service of never disturbing something you are using:
@@ -330,7 +351,7 @@ is an in-place upgrade.
 | `threads` | `{listingId: threadId}` | deep-link into an existing conversation |
 | `notes` | `{id: text}` | per-listing note (category-independent) |
 | `order` | `[id,…]` | panel drag order (category-independent) |
-| `settings` | `{showArchived, showAllPlaces, rewriteDocuments}` | toggles |
+| `settings` | `{showArchived, showAllPlaces, rewriteDocuments, refPlace}` | toggles + the distance reference point |
 
 Declared data collection: **none**. Permissions: `storage`, `webRequest`,
 `webRequestBlocking`, `*://*.airbnb.com/*`. No backend, nothing leaves the
@@ -396,6 +417,7 @@ Claude closes its own loop; see [docs/closing-the-loop.md](docs/closing-the-loop
 | `python scripts/test_startup_load.py` | tabs whose requests race the add-on's startup |
 | `python scripts/repro_broken_page.py` | drives a **copy** of the real profile, so the installed add-on's background script actually runs |
 | `node scripts/test-price.js` | price normalisation across all quote shapes |
+| `node scripts/test-distance.js` | reference-place parsing, haversine distance, formatting |
 | `node scripts/test-pets.js` | reading the pets house rule off a room page |
 | `node scripts/test-session-repair.js` | session repair branches, browser-free |
 | `scripts/drive.py`, `recon_*.py`, `repro_*.py` | ad-hoc live DOM/JSON recon and one-off reproductions |

@@ -314,7 +314,13 @@
 .archiver-row-unit { font: 400 12px sans-serif; color: #717171; margin-left: 5px; }
 /* Per-night alongside the per-30-nights headline. */
 .archiver-row-perday { font: 600 14px sans-serif; color: #444; margin-top: -2px; }
+/* What the period you actually selected costs. The 30-night headline is there to
+   compare listings; this is the number you would really pay, so it gets its own
+   line rather than being buried in the sub-line. */
+.archiver-row-stay { font: 600 13px sans-serif; color: #222; }
 .archiver-row-sub { font-size: 12px; color: #6a6a6a; }
+/* Straight-line distance to the reference place set in the popup. */
+.archiver-row-dist { font: 600 12px sans-serif; color: #00695c; }
 
 /* Host name + the link into your conversation with them. */
 .archiver-row-host { display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 0; flex-wrap: wrap; }
@@ -370,7 +376,9 @@
 .archiver-row--collapsed .archiver-cnav,
 .archiver-row--collapsed .archiver-media-count,
 .archiver-row--collapsed .archiver-row-perday,
+.archiver-row--collapsed .archiver-row-stay,
 .archiver-row--collapsed .archiver-row-sub,
+.archiver-row--collapsed .archiver-row-dist,
 .archiver-row--collapsed .archiver-row-host,
 .archiver-row--collapsed .archiver-tabbed { display: none !important; }
 .archiver-row--collapsed .archiver-row-meta { padding: 6px 10px; gap: 0; justify-content: center; }

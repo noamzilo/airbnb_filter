@@ -127,6 +127,44 @@ check("probe overrides the map view", pq.get("search_by_map") === "true" && pq.g
 check("probe drops the user's filters", !pq.has("amenities[]") && !pq.has("min_bedrooms") && !pq.has("query"), probe);
 check("probe is self-identifying", pq.get("archiver_probe") === "1");
 
+/* ---- a normal dated stay ----
+   Only the monthly search was covered above, and monthly_* happened to be spelled
+   right. Airbnb spells a normal stay "checkin"/"checkout" with NO underscore
+   (verified live), and we listed only the underscored forms, so the dates fell
+   out of both ctxOf and probeUrl: cached prices never went stale on a date
+   change, and every probe asked Airbnb with no dates and got its default quote
+   back. That is where a hard "5 nights" came from on every row. */
+const DATED_SEARCH = "?adults=2&checkin=2026-09-01&checkout=2026-09-12"
+  + "&ne_lat=-25.26&ne_lng=-57.55&sw_lat=-25.32&sw_lng=-57.60&zoom=15&search_by_map=true&query=Asuncion";
+
+const dctx = Filter.ctxOf("https://www.airbnb.com/s/Asuncion/homes" + DATED_SEARCH);
+check("ctx captures the selected dates",
+  dctx.includes("checkin=2026-09-01") && dctx.includes("checkout=2026-09-12"), dctx);
+check("changing the stay changes ctx",
+  Filter.ctxOf("https://www.airbnb.com/s/x/homes" + DATED_SEARCH.replace("2026-09-12", "2026-09-20")) !== dctx);
+check("panning still doesn't change ctx",
+  Filter.ctxOf("https://www.airbnb.com/s/x/homes" + DATED_SEARCH.replace("zoom=15", "zoom=13")) === dctx);
+
+const dprobe = new URL(Filter.probeUrl("https://www.airbnb.com", DATED_SEARCH, { lat: -25.2865, lng: -57.5754 })).searchParams;
+check("probe carries the selected dates",
+  dprobe.get("checkin") === "2026-09-01" && dprobe.get("checkout") === "2026-09-12", dprobe.toString());
+check("probe carries occupancy", dprobe.get("adults") === "2");
+check("probe still drops the user's filters", !dprobe.has("query"));
+
+check("stayOf reads the selected period", JSON.stringify(Filter.stayOf(DATED_SEARCH))
+  === JSON.stringify({ checkin: "2026-09-01", checkout: "2026-09-12", nights: 11, months: null }),
+  JSON.stringify(Filter.stayOf(DATED_SEARCH)));
+check("stayOf counts nights across a month boundary",
+  Filter.stayOf("?checkin=2026-08-28&checkout=2026-09-03").nights === 6);
+check("stayOf accepts the underscored spelling too",
+  Filter.stayOf("?check_in=2026-09-01&check_out=2026-09-04").nights === 3);
+check("stayOf is null with no dates", Filter.stayOf("?adults=1&zoom=15") === null);
+check("stayOf rejects a backwards range", Filter.stayOf("?checkin=2026-09-12&checkout=2026-09-01") === null);
+check("stayOf rejects junk dates", Filter.stayOf("?checkin=soon&checkout=later") === null);
+const monthlyStay = Filter.stayOf(MONTHLY_SEARCH);
+check("stayOf reports a monthly search in months", monthlyStay && monthlyStay.months === 3 && monthlyStay.nights === null,
+  JSON.stringify(monthlyStay));
+
 check("coordFromHtml reads a room page",
   JSON.stringify(Filter.coordFromHtml('junk{"latitude":31.78485,"longitude":35.20905,"x":1}')) === '{"lat":31.78485,"lng":35.20905}',
   JSON.stringify(Filter.coordFromHtml('{"latitude":31.78485,"longitude":35.20905}')));

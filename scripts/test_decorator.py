@@ -2,7 +2,7 @@
 # Injects the real content.js with an in-memory Store/browser stub, then drives
 # the curated panel + map tagging + pin colouring. Text-only assertions.
 
-import time, pathlib, sys
+import time, pathlib, sys, re
 sys.stdout.reconfigure(encoding="utf-8")
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
@@ -84,8 +84,60 @@ try:
     check("headline shows price per 30 nights", "$1,208" in head and "30 nights" in head, repr(head))
     check("no 'Listing <id>' title anywhere", d.execute_script("return !/Listing \\d/.test(document.querySelector('.archiver-panel').innerText)"))
     per = d.execute_script("const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A'); return r?r.querySelector('.archiver-row-perday').textContent:'';")
-    check("sub-line keeps the raw stay price", "14 nights" in sub and "$564" in sub, repr(sub))
     check("per-night shown on its own line", "$40" in per and "night" in per, repr(per))
+
+    # --- the period you actually selected ------------------------------------
+    # Airbnb spells the dates checkin/checkout, with NO underscore, and only the
+    # underscored forms were listed as price-context keys. So probeUrl dropped
+    # them, every probe asked Airbnb with no dates, and Airbnb answered with its
+    # dateless default quote: every row read "for 5 nights" no matter what period
+    # was selected. The row must quote the stay you chose, and must never dress a
+    # default quote up as one.
+    orig_url = d.execute_script("return location.href")
+    stay_of = ("const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A');"
+               " return r?r.querySelector('.archiver-row-stay').textContent:'';")
+    stale_of = ("const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A');"
+                " return r?r.querySelector('.archiver-row-price').classList.contains('archiver-row-price--stale'):null;")
+    d.execute_script("""
+      const u=new URL(location.href);
+      u.searchParams.set('checkin','2026-09-01'); u.searchParams.set('checkout','2026-09-15');
+      history.replaceState(null,'',u.toString());
+      window.__prices={A:{symbol:'$',nights:14,total:563.58,nightly:40.26,monthly:1208,
+                          ctx:Filter.ctxOf(location.href),probedAt:Date.now()}};
+      window.__ls.forEach(f=>f({prices:{}}));
+    """); time.sleep(0.7)
+    stay = d.execute_script(stay_of)
+    head2 = d.execute_script("const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A'); return r?r.querySelector('.archiver-row-price').textContent:'';")
+    check("row quotes the selected period, not a default", "$564" in stay and "14 nights" in stay, repr(stay))
+    check("and names the dates it covers", "1-15 Sep" in stay, repr(stay))
+    check("headline is still the 30-night comparison figure", "$1,208" in head2 and "30 nights" in head2, repr(head2))
+    check("a quote matching the selection is not stale", d.execute_script(stale_of) is False)
+
+    # A quote for a different number of nights is stale even when the context
+    # string happens to line up.
+    d.execute_script("""
+      window.__prices={A:{symbol:'$',nights:5,total:200,nightly:40,monthly:1200,
+                          ctx:Filter.ctxOf(location.href),probedAt:Date.now()}};
+      window.__ls.forEach(f=>f({prices:{}}));
+    """); time.sleep(0.7)
+    check("a quote for the wrong period is flagged stale", d.execute_script(stale_of) is True,
+          repr(d.execute_script(stay_of)))
+
+    # No dates chosen: Airbnb still quotes something, but calling it "5 nights"
+    # would be inventing a period the user never picked.
+    d.execute_script("""
+      history.replaceState(null,'',arguments[0]);
+      window.__prices={A:{symbol:'$',nights:5,total:200,nightly:40,monthly:1200,
+                          ctx:Filter.ctxOf(location.href),probedAt:Date.now()}};
+      window.__ls.forEach(f=>f({prices:{}}));
+    """, orig_url); time.sleep(0.7)
+    stay = d.execute_script(stay_of)
+    check("with no dates it says so instead of inventing a period",
+          stay.strip() == "no dates selected", repr(stay))
+    d.execute_script("""
+      window.__prices={A:{symbol:'$',nights:14,total:563.58,nightly:40.26,monthly:1208}};
+      window.__ls.forEach(f=>f({prices:{}}));
+    """); time.sleep(0.5)
     check("price headline links to the room", d.execute_script(
         "const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='A'); return r.querySelector('a.archiver-row-price').href.includes('/rooms/')"))
     check("row has a Go-to-property button", d.execute_script(
@@ -424,6 +476,29 @@ try:
     check("'Show all' reveals every listing again", sorted(shown)==["ASU","JER","NOLOC"], str(shown))
     check("scope button reflects state", d.execute_script(
         "const b=document.querySelector('.archiver-scope'); return b.classList.contains('on') && b.textContent==='On this map'"))
+
+    # --- distance from a reference place (Booking-style) --------------------
+    # Ref point is 0.01 deg of latitude north of ASU, which is 1.11 km, so the
+    # row must read "1.1 km". JER is on another continent (whole-km format),
+    # and NOLOC has no coordinate, so its distance line must stay hidden.
+    d.execute_script(
+        "window.__settings.refPlace={lat:-25.28,lng:-57.57,raw:'-25.28, -57.57'};"
+        "window.__ls.forEach(f=>f({settings:{}}));"); time.sleep(0.8)
+    dist = d.execute_script("""
+      const t=id=>{const r=document.querySelector(`.archiver-row[data-id="${id}"] .archiver-row-dist`);
+        return r? {text:r.textContent, shown:r.style.display!=='none'} : null;};
+      return {ASU:t('ASU'), JER:t('JER'), NOLOC:t('NOLOC')};
+    """)
+    check("nearby listing shows its distance",
+          dist["ASU"] and dist["ASU"]["shown"] and "1.1 km from your place" in dist["ASU"]["text"], str(dist))
+    check("far listing shows whole kilometres",
+          dist["JER"] and dist["JER"]["shown"] and re.search(r"\d{4,} km", dist["JER"]["text"]), str(dist))
+    check("no coordinate -> no distance line",
+          dist["NOLOC"] and not dist["NOLOC"]["shown"] and dist["NOLOC"]["text"] == "", str(dist))
+    d.execute_script("window.__settings.refPlace=null; window.__ls.forEach(f=>f({settings:{}}));"); time.sleep(0.8)
+    check("clearing the place hides every distance", d.execute_script(
+        "return [...document.querySelectorAll('.archiver-row-dist')].every(e=>e.style.display==='none'&&e.textContent==='')"))
+
     d.execute_script("window.__settings.showAllPlaces=false; window.__ls.forEach(f=>f({settings:{}}));"); time.sleep(0.5)
 
     # restore the original map bounds + the two-row fixture for the remaining checks

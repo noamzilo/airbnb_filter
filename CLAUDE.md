@@ -8,8 +8,8 @@ the DOM as **text** (screenshots are too token-expensive). Read
   Airbnb, injects `extension/content.js` with a stubbed store, asserts
   panel / colouring / map-tagging behavior. Run after any `content.js` change.
 - **`node scripts/test-filter.js` / `test-reinject.js` / `test-html-rewrite.js` /
-  `test-price.js` / `test-pets.js` / `test-session-repair.js` /
-  `test-marker-id.js`** - fast pure-logic
+  `test-price.js` / `test-pets.js` / `test-distance.js` /
+  `test-session-repair.js` / `test-marker-id.js`** - fast pure-logic
   tests (no browser): archiving, re-injection, HTML blob rewriting, price
   normalisation, reading the pets house rule off a room page, the session
   repair that keeps every Firefox window across a restart, and the measurement

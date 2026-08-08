@@ -21,6 +21,9 @@
     .act { padding: 5px 9px; font: 600 12px sans-serif; color: #fff; background: #222; border: none; border-radius: 6px; cursor: pointer; flex: none; }
     .empty { padding: 24px 14px; text-align: center; color: #717171; }
     .hint { padding: 0 14px 12px; color: #717171; font-size: 11px; line-height: 1.4; }
+    .hint.ok { color: #00695c; }
+    .hint.bad { color: #c62828; }
+    .toggle input[type="text"] { flex: 1; min-width: 0; padding: 6px 8px; font: 12px sans-serif; border: 1px solid #ddd; border-radius: 6px; }
   </style>
 </head>
 <body>
@@ -41,6 +44,14 @@
     <div class="list" id="list-archived"></div>
   </div>
 
+  <div class="toggle">
+    <label for="refPlace" style="flex:none;">📍 Distance from</label>
+    <input type="text" id="refPlace" placeholder="lat, lng or a Google Maps link" />
+  </div>
+  <div class="hint" id="refPlaceHint">Paste coordinates or a Google Maps link to
+    your place; every saved listing then shows how far it is (straight line).
+    Clear the box to turn it off.</div>
+
   <div class="toggle" style="border-bottom:none;">
     <input type="checkbox" id="rewriteDocuments" />
     <label for="rewriteDocuments">Rewrite search pages too (advanced)</label>
@@ -52,6 +63,7 @@
   </div>
 
   <script src="store.js"></script>
+  <script src="filter.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

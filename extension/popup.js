@@ -2,6 +2,44 @@
 
 const toggleEl = document.getElementById("showArchived");
 const rewriteEl = document.getElementById("rewriteDocuments");
+const refEl = document.getElementById("refPlace");
+const refHint = document.getElementById("refPlaceHint");
+const REF_HINT_DEFAULT = refHint.textContent;
+
+// Reflect the stored reference place, but never yank text out from under
+// active typing: storage.onChanged re-renders the popup on every save,
+// including the save this very field just made.
+function showRefPlace(settings) {
+  const rp = settings.refPlace;
+  if (document.activeElement !== refEl) {
+    refEl.value = rp ? (rp.raw || rp.lat + ", " + rp.lng) : "";
+  }
+  if (rp) {
+    refHint.className = "hint ok";
+    refHint.textContent = "Measuring from " + rp.lat.toFixed(5) + ", " + rp.lng.toFixed(5)
+      + ". Saved listings show their straight-line distance.";
+  } else {
+    refHint.className = "hint";
+    refHint.textContent = REF_HINT_DEFAULT;
+  }
+}
+
+refEl.addEventListener("input", () => {
+  const raw = refEl.value.trim();
+  if (!raw) {
+    refHint.className = "hint";
+    refHint.textContent = REF_HINT_DEFAULT;
+    Store.setSetting("refPlace", null);
+    return;
+  }
+  const place = Filter.parsePlace(raw);
+  if (place) {
+    Store.setSetting("refPlace", { ...place, raw });
+  } else {
+    refHint.className = "hint bad";
+    refHint.textContent = "Couldn't read coordinates from that. Paste \"lat, lng\" or a Google Maps link.";
+  }
+});
 
 function row(id, snap, actionLabel, onAction) {
   const r = document.createElement("div");
@@ -51,6 +89,7 @@ async function render() {
   const settings = await Store.getSettings();
   toggleEl.checked = settings.showArchived;
   rewriteEl.checked = settings.rewriteDocuments;
+  showRefPlace(settings);
 
   const clear = (id) => Store.setCategory(id, null, null);
   const nStar = fill(document.getElementById("list-starred"), starred, "Click ☆ on a listing to like it.", "Remove", clear);

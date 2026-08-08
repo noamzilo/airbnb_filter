@@ -201,11 +201,46 @@ const Filter = {
   // Params that decide the quoted price. Two searches with the same signature
   // quote the same price, so a cached price survives pans and zooms but not a
   // date / guest / monthly-mode change.
+  // Airbnb spells these "checkin"/"checkout", with NO underscore (verified live:
+  // scripts/recon_dates.py). Listing only the underscored forms meant the dates
+  // were invisible here, which broke two things at once: ctxOf could not tell two
+  // date ranges apart, so a cached price looked fresh forever and never
+  // re-probed; and probeUrl dropped the dates, so every probe asked Airbnb with
+  // NO dates and got back its dateless default quote. That is where a hard
+  // "5 nights" came from on every row whatever you had selected.
+  // The underscored spellings are kept as harmless aliases.
   PRICE_CTX_KEYS: [
-    "adults", "children", "infants", "pets", "check_in", "check_out",
-    "monthly_start_date", "monthly_end_date", "monthly_length", "flexible_trip_lengths[]",
-    "price_filter_input_type", "date_picker_type", "search_mode", "currency",
+    "adults", "children", "infants", "pets",
+    "checkin", "checkout", "check_in", "check_out",
+    "monthly_start_date", "monthly_end_date", "monthly_length",
+    "flexible_trip_lengths[]", "flexible_trip_dates[]",
+    "price_filter_input_type", "price_filter_num_nights",
+    "date_picker_type", "search_type", "search_mode", "currency",
   ],
+
+  // The period the user actually selected, read off the search URL.
+  // { checkin, checkout, nights } for a normal stay, { months } for a monthly
+  // search, or null when no dates are chosen (Airbnb then quotes a default,
+  // which must NOT be presented as if it were a chosen period).
+  stayOf(search) {
+    try {
+      const p = new URLSearchParams(String(search || "").replace(/^\?/, ""));
+      const ci = p.get("checkin") || p.get("check_in");
+      const co = p.get("checkout") || p.get("check_out");
+      const day = (s) => Date.parse(String(s) + "T00:00:00Z");
+      if (ci && co) {
+        const a = day(ci), b = day(co);
+        if (isFinite(a) && isFinite(b) && b > a) {
+          return { checkin: ci, checkout: co, nights: Math.round((b - a) / 86400000), months: null };
+        }
+      }
+      const ml = parseInt(p.get("monthly_length"), 10);
+      if (isFinite(ml) && ml > 0) {
+        return { checkin: p.get("monthly_start_date"), checkout: p.get("monthly_end_date"), nights: null, months: ml };
+      }
+      return null;
+    } catch (_) { return null; }
+  },
 
   ctxOf(url) {
     try {
@@ -214,6 +249,62 @@ const Filter = {
         .map((k) => { const v = p.getAll(k); return v.length ? k + "=" + v.join(",") : null; })
         .filter(Boolean).join("&");
     } catch (_) { return ""; }
+  },
+
+  /* ---- distance from a fixed reference point ----
+     Booking.com-style "how far is this from my place". Every listing already
+     has a coordinate on record, so the only missing piece is the reference
+     point. No geocoding service is called (nothing leaves the browser except
+     requests to airbnb.com), so the place is whatever coordinates the user
+     pastes: "lat, lng" directly, or a Google Maps link that carries them. */
+
+  // {lat, lng} out of pasted text, or null when none can be read.
+  parsePlace(text) {
+    const s = String(text || "").trim();
+    if (!s) return null;
+    const ok = (la, ln) => {
+      const lat = parseFloat(la), lng = parseFloat(ln);
+      // 0,0 is the middle of the Atlantic; a paste that reads as it is a
+      // parse accident, not anyone's home.
+      return isFinite(lat) && isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180
+        && (lat !== 0 || lng !== 0) ? { lat, lng } : null;
+    };
+    const NUM = "(-?\\d{1,3}(?:\\.\\d+)?)";
+    // A Google Maps place link: ...!3d-25.28646!4d-57.647. This is the pin
+    // itself, so it wins over @, which is only where the camera was.
+    let m = s.match(new RegExp("!3d" + NUM + "!4d" + NUM));
+    if (m) { const r = ok(m[1], m[2]); if (r) return r; }
+    // The camera: .../@-25.2864,-57.6470,15z
+    m = s.match(new RegExp("@" + NUM + "," + NUM));
+    if (m) { const r = ok(m[1], m[2]); if (r) return r; }
+    // q= / ll= / destination= style params carrying "lat,lng"
+    m = s.match(new RegExp("[?&](?:q|ll|query|center|destination)=" + NUM + "(?:,|%2C)\\s*" + NUM, "i"));
+    if (m) { const r = ok(m[1], m[2]); if (r) return r; }
+    // Plain "lat, lng", which is also what Google Maps' right-click
+    // "copy coordinates" puts on the clipboard.
+    m = s.match(new RegExp("^" + NUM + "\\s*[,;\\s]\\s*" + NUM + "$"));
+    if (m) { const r = ok(m[1], m[2]); if (r) return r; }
+    return null;
+  },
+
+  // Great-circle distance in km (haversine). Straight-line, like Booking's
+  // own "X km from centre" figures; good enough to rank flats by.
+  distanceKm(a, b) {
+    if (!a || !b || !isFinite(a.lat) || !isFinite(a.lng) || !isFinite(b.lat) || !isFinite(b.lng)) return null;
+    const rad = Math.PI / 180;
+    const dLat = (b.lat - a.lat) * rad, dLng = (b.lng - a.lng) * rad;
+    const h = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+      + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return 2 * 6371 * Math.asin(Math.sqrt(Math.min(1, h)));
+  },
+
+  // The precision people actually read distances at: metres to the nearest 10
+  // under a kilometre, one decimal under ten, whole kilometres beyond.
+  fmtDistance(km) {
+    if (km == null || !isFinite(km) || km < 0) return "";
+    if (km < 0.995) return Math.max(10, Math.round(km * 100) * 10) + " m";
+    if (km < 9.95) return (Math.round(km * 10) / 10).toFixed(1) + " km";
+    return Math.round(km) + " km";
   },
 
   // A search scoped to a tiny box around one listing - this is how a saved

@@ -15,6 +15,7 @@ let prices = {};
 let collapsed = {};   // id -> true, rows shown as a compact strip
 let showArchived = false;
 let showAllPlaces = false;   // bypass the "only what's on the map" filter
+let refPlace = null;         // {lat, lng} the user set; rows then show distance
 
 const CURRENCY = /[$€£₲¥₩₪₫฿]/;
 const UNDO_MS = 1500;
@@ -32,6 +33,7 @@ async function loadState() {
   const s = await Store.getSettings();
   showArchived = s.showArchived;
   showAllPlaces = !!s.showAllPlaces;
+  refPlace = s.refPlace && isFinite(s.refPlace.lat) && isFinite(s.refPlace.lng) ? s.refPlace : null;
   // Which listing each map pin is depends on all of the above, so any reload
   // invalidates the resolution.
   taggedPointsCache = null;
@@ -1092,31 +1094,74 @@ function highlightMarker(id, on) {
 
 /* --- price, normalised to 30 nights --- */
 function fmtMoney(sym, v) { return (sym || "") + Math.round(v).toLocaleString("en-US"); }
+/* The stay you actually selected. Read from the URL rather than from whatever
+   the quote's label happens to say, so the row can state the period it is
+   quoting and can tell you when a stored price was quoted for a different one. */
+function currentStay() { return typeof Filter !== "undefined" ? Filter.stayOf(location.search) : null; }
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function fmtStayRange(st) {
+  if (!st || !st.checkin || !st.checkout) return "";
+  const a = new Date(st.checkin + "T00:00:00Z"), b = new Date(st.checkout + "T00:00:00Z");
+  if (!isFinite(a.getTime()) || !isFinite(b.getTime())) return "";
+  const d = (x) => x.getUTCDate(), m = (x) => MONTHS[x.getUTCMonth()];
+  const sameMonth = a.getUTCMonth() === b.getUTCMonth() && a.getUTCFullYear() === b.getUTCFullYear();
+  return sameMonth ? `${d(a)}-${d(b)} ${m(b)}` : `${d(a)} ${m(a)} - ${d(b)} ${m(b)}`;
+}
+function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+// "📍 2.4 km from your place", or "" when no reference place is set or this
+// listing's location was never learned (then saying nothing beats guessing).
+function distText(id) {
+  if (!refPlace || typeof Filter === "undefined") return "";
+  const c = coordFor(id);
+  const km = c ? Filter.distanceKm(refPlace, c) : null;
+  const s = km == null ? "" : Filter.fmtDistance(km);
+  return s ? "📍 " + s + " from your place" : "";
+}
+// The line for the period you picked: what the whole stay costs, over how many
+// nights, between which dates. Empty when nothing is selected, because a
+// dateless quote is Airbnb's default and saying "for 5 nights" about it is a lie.
+function stayText(price) {
+  const st = currentStay();
+  if (st && st.months) return plural(st.months, "month") + " selected";
+  if (!st) return price && price.nights ? "no dates selected" : "";
+  if (price && price.total != null && price.nights) {
+    const range = fmtStayRange(st);
+    return fmtMoney(price.symbol, price.total) + " for " + plural(price.nights, "night")
+      + (range ? "  ·  " + range : "");
+  }
+  const range = fmtStayRange(st);
+  return plural(st.nights, "night") + (range ? "  ·  " + range : "");
+}
 function priceText(id) {
   const { price } = mediaOf(id);
   if (price && price.unavailable) {
     return {
-      head: "Unavailable", unit: "", muted: true,
+      head: "Unavailable", unit: "", muted: true, stay: stayText(null),
       sub: price.lastMonthly != null
         ? "last seen " + fmtMoney(price.symbol, price.lastMonthly) + " / 30 nights"
         : "not offered for these dates",
     };
   }
   if (price && price.monthly != null) {
+    const st = currentStay();
     const bits = [];
     if (price.basis === "monthly") bits.push("Airbnb monthly rate");
-    if (price.total != null && price.nights) bits.push(fmtMoney(price.symbol, price.total) + " for " + price.nights + " nights");
     if (price.original != null && price.original > price.monthly) bits.push("was " + fmtMoney(price.symbol, price.original));
     return {
       head: fmtMoney(price.symbol, price.monthly),
       unit: "/ 30 nights",
       perDay: price.nightly != null ? fmtMoney(price.symbol, price.nightly) + " / night" : "",
+      stay: stayText(price),
       sub: bits.join("  ·  "),
-      stale: price.ctx !== currentCtx(),   // quoted for different dates; a probe is on the way
+      // Quoted for a different search than the one on screen, so a probe is on
+      // its way. A nights count that disagrees with the selected period says the
+      // same thing, and says it even if the context string somehow matches.
+      stale: price.ctx !== currentCtx()
+        || !!(st && st.nights && price.nights && price.nights !== st.nights),
     };
   }
   const raw = snapOf(id).price || "";
-  return { head: raw || "-", unit: "", perDay: "", sub: raw ? "" : "checking price…", stale: true };
+  return { head: raw || "-", unit: "", perDay: "", stay: "", sub: raw ? "" : "checking price…", stale: true };
 }
 
 // Which photo each listing is showing. A re-render (a price landing, a note
@@ -1215,7 +1260,18 @@ function panelRow(id) {
   perDay.className = "archiver-row-perday"; perDay.textContent = p.perDay || "";
   if (!p.perDay) perDay.style.display = "none";
 
+  // What the stay you actually picked costs, on its own line: the 30-night
+  // headline is a comparison figure, this is the number you'd pay.
+  const stay = document.createElement("div");
+  stay.className = "archiver-row-stay"; stay.textContent = p.stay || "";
+  if (!p.stay) stay.style.display = "none";
+
   const sub = document.createElement("div"); sub.className = "archiver-row-sub"; sub.textContent = p.sub;
+
+  // How far from the place the user pinned in the popup (Booking-style).
+  const dist = document.createElement("div");
+  dist.className = "archiver-row-dist"; dist.textContent = distText(id);
+  if (!dist.textContent) dist.style.display = "none";
 
   const hostRow = document.createElement("div"); hostRow.className = "archiver-row-host";
   const hostName = document.createElement("span"); hostName.className = "archiver-host-name";
@@ -1231,7 +1287,7 @@ function panelRow(id) {
   hostRow.append(hostName, prop, chat);
   fillHost(hostRow, id);
 
-  meta.append(head, perDay, sub, hostRow, buildTabbed(id));
+  meta.append(head, perDay, stay, sub, dist, hostRow, buildTabbed(id));
   row.append(media, meta);
   return row;
 }
@@ -1514,8 +1570,12 @@ function updateRow(row) {
   }
   const per = row.querySelector(".archiver-row-perday");
   if (per) { per.textContent = p.perDay || ""; per.style.display = p.perDay ? "" : "none"; }
+  const stay = row.querySelector(".archiver-row-stay");
+  if (stay) { stay.textContent = p.stay || ""; stay.style.display = p.stay ? "" : "none"; }
   const sub = row.querySelector(".archiver-row-sub");
   if (sub) sub.textContent = p.sub;
+  const dist = row.querySelector(".archiver-row-dist");
+  if (dist) { const t = distText(row.dataset.id); dist.textContent = t; dist.style.display = t ? "" : "none"; }
   const hostRow = row.querySelector(".archiver-row-host");
   if (hostRow) fillHost(hostRow, id);
   const chat = row.querySelector(".archiver-host-chat");
