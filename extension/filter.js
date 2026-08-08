@@ -152,6 +152,17 @@ const Filter = {
      measured as base minus price-after-discount. That captures every line
      instead of just the first, and it is the number the guest actually keeps. */
   DISCOUNT_MIN_NIGHTS: { weekly: 7, monthly: 28 },
+
+  // "2026-09-01", 7 -> "2026-09-08". UTC throughout so a timezone can't shift a
+  // date across midnight and change the stay length by one.
+  addDays(iso, n) {
+    const t = Date.parse(String(iso) + "T00:00:00Z");
+    if (!isFinite(t)) return null;
+    const d = new Date(t + n * 86400000);
+    const p = (x) => String(x).padStart(2, "0");
+    return d.getUTCFullYear() + "-" + p(d.getUTCMonth() + 1) + "-" + p(d.getUTCDate());
+  },
+
   discountOf(sdp) {
     const groups = (sdp && sdp.explanationData && sdp.explanationData.priceDetails) || [];
     let base = null, after = null, label = null;
@@ -399,6 +410,47 @@ const Filter = {
     q.append("refinement_paths[]", "/homes");
     q.set("archiver_probe", "1");
     return (origin || "https://www.airbnb.com") + "/s/homes?" + q.toString();
+  },
+
+  /* ---- placing a coordinate on Airbnb's map ----
+     The map is Google's and gives us no API, but every price marker is a DOM
+     element carrying its own lat/lng (position="lat,lng") and its own screen
+     rect. Web Mercator maps longitude to x linearly and mercator-projected
+     latitude to y linearly at any fixed zoom, so two or more visible markers
+     pin down the whole screen transform, and then any coordinate can be
+     placed: that is how the "your place" pin rides a map we don't control. */
+
+  // Latitude -> Mercator y (unitless; the linear fit absorbs the scale).
+  mercY(lat) { return Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2)); },
+
+  // pts: [{lat, lng, x, y}] from visible markers -> {ax, bx, ay, by} such that
+  // x = ax*lng + bx and y = ay*mercY(lat) + by. Least squares over every
+  // marker, so one marker mid-animation only nudges the fit instead of
+  // steering it. Null when markers are too few or all share a line.
+  fitMapProjection(pts) {
+    const P = (pts || []).filter((p) => p && isFinite(p.lat) && isFinite(p.lng)
+      && isFinite(p.x) && isFinite(p.y));
+    if (P.length < 2) return null;
+    const fit1 = (us, vs) => {
+      const n = us.length;
+      let su = 0, sv = 0, suu = 0, suv = 0;
+      for (let i = 0; i < n; i++) { su += us[i]; sv += vs[i]; suu += us[i] * us[i]; suv += us[i] * vs[i]; }
+      const den = n * suu - su * su;
+      if (!isFinite(den) || Math.abs(den) < 1e-9) return null;
+      const a = (n * suv - su * sv) / den;
+      return { a, b: (sv - a * su) / n };
+    };
+    const fx = fit1(P.map((p) => p.lng), P.map((p) => p.x));
+    const fy = fit1(P.map((p) => Filter.mercY(p.lat)), P.map((p) => p.y));
+    if (!fx || !fy || !fx.a || !fy.a) return null;
+    return { ax: fx.a, bx: fx.b, ay: fy.a, by: fy.b };
+  },
+
+  // {x, y} in the same pixel space the fit was made from, or null.
+  projectPoint(fit, lat, lng) {
+    if (!fit || !isFinite(lat) || !isFinite(lng)) return null;
+    const x = fit.ax * lng + fit.bx, y = fit.ay * Filter.mercY(lat) + fit.by;
+    return isFinite(x) && isFinite(y) ? { x, y } : null;
   },
 
   // Centre of the geocoded viewport in a search page's HTML: the place the

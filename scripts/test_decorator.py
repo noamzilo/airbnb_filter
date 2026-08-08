@@ -281,6 +281,77 @@ try:
     sub = d.execute_script("const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='P1'); return r.querySelector('.archiver-row-sub').textContent;")
     check("no discount -> the line claims none", sub.strip() == "", repr(sub))
 
+    # --- the WHOLE ladder, not just the tier this search reaches -------------
+    # A quote only ever contains the one tier the current period triggers: search
+    # 36 nights and only the 28+ discount is in it, even though the listing also
+    # has a 7+ one. Comparing two saved listings was comparing whichever tier each
+    # happened to be showing. The ladder is learned by probing 7 and 28 nights and
+    # cached, so every step shows whatever period is selected.
+    d.execute_script("""
+      const u=new URL(location.href);
+      u.searchParams.set('checkin','2026-10-13'); u.searchParams.set('checkout','2026-11-18');
+      history.replaceState(null,'',u.toString());       // 36 nights
+      window.__discounts={P1:{checkedAt:Date.now(),steps:[
+        {minNights:7,pct:13,label:'Weekly stay discount'},
+        {minNights:28,pct:28,label:'Monthly stay discount'}]}};
+      window.__prices={P1:{symbol:'$',monthly:781,nightly:26,total:682,nights:36,basis:'stay',
+        discount:{label:'Monthly stay discount',kind:'monthly',minNights:28,amount:265,base:947,pct:28},
+        ctx:Filter.ctxOf(location.href),probedAt:Date.now()}};
+      window.__ls.forEach(f=>f({discounts:{}}));
+    """); time.sleep(0.8)
+    lad = d.execute_script("""
+      const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='P1');
+      return {stay:r.querySelector('.archiver-row-stay').textContent,
+              steps:[...r.querySelectorAll('.archiver-disc')].map(s=>s.textContent),
+              on:[...r.querySelectorAll('.archiver-disc--on')].map(s=>s.textContent)};
+    """)
+    check("every discount step is shown, not just the one in this quote",
+          len(lad["steps"]) == 2 and "7+ nights 13% off" in lad["steps"][0], str(lad))
+    check("the step your stay reaches is the one marked",
+          len(lad["on"]) == 1 and "28+ nights" in lad["on"][0], str(lad))
+    check("the money hangs off that step", "saves $265" in lad["on"][0], str(lad))
+    check("and the period is spelled out",
+          lad["stay"].startswith("Your stay:") and "36 nights" in lad["stay"], str(lad))
+
+    # Shorten the stay to 11 nights: the ladder is unchanged, but the tier you
+    # now qualify for is the 7+ one.
+    d.execute_script("""
+      const u=new URL(location.href);
+      u.searchParams.set('checkout','2026-10-24'); history.replaceState(null,'',u.toString());
+      window.__prices={P1:{symbol:'$',monthly:1000,nightly:33,total:330,nights:11,basis:'stay',
+        discount:{label:'Weekly stay discount',kind:'weekly',minNights:7,amount:49,base:379,pct:13},
+        ctx:Filter.ctxOf(location.href),probedAt:Date.now()}};
+      window.__ls.forEach(f=>f({prices:{}}));
+    """); time.sleep(0.8)
+    lad = d.execute_script("""
+      const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='P1');
+      return {stay:r.querySelector('.archiver-row-stay').textContent,
+              steps:[...r.querySelectorAll('.archiver-disc')].map(s=>s.textContent),
+              on:[...r.querySelectorAll('.archiver-disc--on')].map(s=>s.textContent)};
+    """)
+    check("a shorter stay still lists the longer-stay step",
+          len(lad["steps"]) == 2 and "28+ nights 28% off" in lad["steps"][1], str(lad))
+    check("but marks the step that now applies",
+          len(lad["on"]) == 1 and "7+ nights" in lad["on"][0], str(lad))
+    check("period follows the new selection", "11 nights" in lad["stay"], str(lad))
+
+    # A discount with no length threshold (a "Special offer", seen live) must not
+    # be given an invented minimum.
+    d.execute_script("""
+      window.__discounts={P1:{checkedAt:Date.now(),steps:[{minNights:null,pct:18,label:'Special offer'}]}};
+      window.__ls.forEach(f=>f({discounts:{}}));
+    """); time.sleep(0.8)
+    steps = d.execute_script("""
+      const r=[...document.querySelectorAll('.archiver-row')].find(x=>x.dataset.id==='P1');
+      return [...r.querySelectorAll('.archiver-disc')].map(s=>s.textContent);
+    """)
+    check("a discount with no threshold claims no minimum",
+          steps == ["18% off"], str(steps))
+    d.execute_script("""
+      history.replaceState(null,'',arguments[0]);
+      window.__discounts={}; window.__ls.forEach(f=>f({discounts:{}}));
+    """, orig_url); time.sleep(0.5)
+
     # --- the list scrolls ----------------------------------------------------
     d.execute_script("""
       const s={},m={};
@@ -577,10 +648,31 @@ try:
             "const b=document.querySelector('.archiver-placebar');"
             "return b.querySelector('.archiver-place-input').value.length>0"
             " && b.querySelector('.archiver-place-clear').style.display!=='none'"))
-        d.execute_script("document.querySelector('.archiver-place-clear').click()"); time.sleep(0.8)
+        # The big pin: projected onto the map from the visible markers' own
+        # lat/lng + screen rects. Only shown when it lands inside the map, so
+        # visible implies correctly placed (no exact-pixel asserts: headless
+        # map geometry is unreliable, see CLAUDE.md).
+        pin = None
+        for _ in range(6):
+            time.sleep(0.7)
+            pin = d.execute_script("""
+              const p=document.querySelector('.archiver-refpin');
+              if(!p||p.style.display==='none') return null;
+              const map=document.querySelector('[data-testid="map/GoogleMap"]')
+                || document.querySelector('[aria-roledescription="map"]');
+              const r=p.getBoundingClientRect(), mr=map? map.getBoundingClientRect():null;
+              return {label:p.textContent, overMap: !!mr && r.left>=mr.left-40 && r.right<=mr.right+40
+                      && r.top>=mr.top-40 && r.bottom<=mr.bottom+40};
+            """)
+            if pin: break
+        check("'Your place' pin appears on the map", bool(pin) and "Your place" in pin["label"], str(pin))
+        check("...over the map, not somewhere on the page", bool(pin) and pin["overMap"], str(pin))
+        d.execute_script("document.querySelector('.archiver-place-clear').click()"); time.sleep(1.2)
         check("the x forgets the place", d.execute_script(
             "return !window.__settings.refPlace"
             " && [...document.querySelectorAll('.archiver-row-dist')].every(e=>e.style.display==='none')"))
+        check("...and takes the pin with it", d.execute_script(
+            "const p=document.querySelector('.archiver-refpin'); return !p || p.style.display==='none'"))
 
     d.execute_script("window.__settings.showAllPlaces=false; window.__ls.forEach(f=>f({settings:{}}));"); time.sleep(0.5)
 

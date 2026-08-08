@@ -136,6 +136,25 @@ const Store = {
       await browser.storage.local.set({ notes });
     });
   },
+  // id -> { steps: [{minNights, pct, label}], checkedAt }. The listing's whole
+  // discount ladder, not just the tier the current search happens to trigger.
+  // These are host settings and barely change, so this is written once and
+  // reused across searches (see LADDER_TTL_MS in content.js).
+  async getDiscounts() { return (await browser.storage.local.get("discounts")).discounts || {}; },
+  async setDiscounts(entries) {
+    return serial(async () => {
+      const all = await Store.getDiscounts();
+      let dirty = false;
+      for (const id of Object.keys(entries || {})) {
+        if (JSON.stringify(all[id]) === JSON.stringify(entries[id])) continue;
+        all[id] = entries[id];
+        dirty = true;
+      }
+      if (dirty) await browser.storage.local.set({ discounts: all });
+      return dirty;
+    });
+  },
+
   // Which rows are shown as a compact strip. Persisted, because a list you
   // tidied should still be tidy after a reload, and independent of category so
   // it survives star <-> maybe like notes and order do.

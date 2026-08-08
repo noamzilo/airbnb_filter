@@ -13,6 +13,7 @@ let order = [];
 let images = {};
 let prices = {};
 let collapsed = {};   // id -> true, rows shown as a compact strip
+let discounts = {};   // id -> { steps: [{minNights, pct, label}], checkedAt }
 let showArchived = false;
 let showAllPlaces = false;   // bypass the "only what's on the map" filter
 let refPlace = null;         // {lat, lng} the user set; rows then show distance
@@ -26,6 +27,7 @@ async function loadState() {
   notes = await Store.getNotes();
   order = await Store.getOrder();
   collapsed = (Store.getCollapsed ? await Store.getCollapsed() : {}) || {};
+  discounts = (Store.getDiscounts ? await Store.getDiscounts() : {}) || {};
   images = await Store.getImages();
   prices = (Store.getPrices ? await Store.getPrices() : {}) || {};
   hosts = (Store.getHosts ? await Store.getHosts() : {}) || {};
@@ -298,6 +300,105 @@ async function probePrice(id, ctx) {
   // Neighbours came back and this one didn't: that is a real answer.
   if (!found[id]) await markUnavailable(id, stamp);
   return "ok";
+}
+
+/* --- the whole discount ladder ------------------------------------------
+   A quote only ever contains the ONE discount tier the current search triggers:
+   search 11 nights and you see the weekly discount, search 36 and you see the
+   monthly one, even though the listing has both. Comparing two saved listings
+   was therefore comparing whichever tier each happened to be showing.
+
+   So ask directly. One probe at 7 nights and one at 28 (the thresholds measured
+   in scripts/recon_thresh.py) reveal each tier's percentage. The percentage is a
+   host setting, constant across dates and stay lengths (measured: the same 15%
+   at 7, 8, 14 and 27 nights), so this is cached for a week and reused across
+   every search. Like the price probe, one request answers for every listing in
+   the box, so a cluster of saved listings usually costs two requests in total. */
+const LADDER_STEPS = [7, 28];
+const LADDER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const LADDER_GAP_MS = 500;
+
+function todayISO() {
+  const d = new Date();
+  const p = (x) => String(x).padStart(2, "0");
+  return d.getUTCFullYear() + "-" + p(d.getUTCMonth() + 1) + "-" + p(d.getUTCDate());
+}
+// Anchor the probes on the dates you picked, so they land on a window the host
+// is actually offering; with no dates chosen, far enough out to miss
+// last-minute pricing.
+function ladderStart() {
+  const st = currentStay();
+  return (st && st.checkin) || Filter.addDays(todayISO(), 30);
+}
+function ladderFresh(id) {
+  const l = discounts[id];
+  return !!(l && l.checkedAt && Date.now() - l.checkedAt < LADDER_TTL_MS);
+}
+
+let ladderQueue = [], ladderBusy = false;
+const ladderAsked = new Set();
+function scheduleLadders(ids) {
+  if (typeof Filter === "undefined" || typeof fetch !== "function") return;
+  for (const id of ids) {
+    if (ladderFresh(id) || ladderAsked.has(id) || ladderQueue.includes(id)) continue;
+    ladderQueue.push(id);
+  }
+  pumpLadders();
+}
+// One at a time and unhurried: this is background enrichment, and it must never
+// crowd out the price probes, which are what the row is waiting on.
+function pumpLadders() {
+  if (ladderBusy || !ladderQueue.length) return;
+  const id = ladderQueue.shift();
+  if (ladderFresh(id) || ladderAsked.has(id)) { pumpLadders(); return; }
+  ladderAsked.add(id);
+  ladderBusy = true;
+  probeLadder(id)
+    .catch((e) => console.warn("[Archiver] discount ladder failed for", id, e))
+    .then(() => { ladderBusy = false; setTimeout(pumpLadders, LADDER_GAP_MS); });
+}
+
+async function probeLadder(id) {
+  let coord = coordFor(id);
+  if (!coord) coord = await coordFromListingPage(id);
+  if (!coord) return;
+  const start = ladderStart();
+  if (!start) return;
+
+  const learned = {};          // listing id -> { stepKey: step }
+  let answered = false;
+  for (const n of LADDER_STEPS) {
+    const co = Filter.addDays(start, n);
+    if (!co) continue;
+    const search = "?adults=1&checkin=" + start + "&checkout=" + co;
+    const res = await fetch(Filter.probeUrl(location.origin, search, coord), { credentials: "same-origin" });
+    if (!res.ok) continue;
+    const found = Filter.harvestHtml(await res.text());
+    if (!Object.keys(found).length) continue;   // blocked or empty: learned nothing
+    answered = true;
+    for (const fid of Object.keys(found)) {
+      const d = found[fid].price && found[fid].price.discount;
+      if (!d || !(d.pct > 0)) continue;
+      const bucket = (learned[fid] = learned[fid] || {});
+      // Key by threshold so the two probes can't record the same tier twice.
+      bucket[d.minNights != null ? "n" + d.minNights : d.label || "other"] =
+        { minNights: d.minNights != null ? d.minNights : null, pct: d.pct, label: d.label };
+    }
+    await new Promise((r) => setTimeout(r, LADDER_GAP_MS));
+  }
+  if (!answered) return;       // don't record "no discounts" when nothing replied
+
+  const tracked = new Set([...Object.keys(cats.starred), ...Object.keys(cats.maybe)]);
+  const patch = {};
+  // Anything tracked that the probes covered gets an answer, including the
+  // honest empty one: "checked, this listing has no length-of-stay discount".
+  for (const fid of tracked) {
+    if (fid !== id && !learned[fid]) continue;
+    const steps = Object.values(learned[fid] || {})
+      .sort((a, b) => (a.minNights == null ? 1e9 : a.minNights) - (b.minNights == null ? 1e9 : b.minNights));
+    patch[fid] = { steps, checkedAt: Date.now() };
+  }
+  if (Object.keys(patch).length && Store.setDiscounts) await Store.setDiscounts(patch);
 }
 
 // The room page has no price, but it does carry the coordinate a probe needs,
@@ -725,7 +826,14 @@ function buildPlaceBar() {
       if (document.activeElement !== input) return;   // answer arrived after they left
     }
     current = sugs;
-    if (!sugs.length) { showMsg("No places match that."); return; }
+    if (!sugs.length) {
+      // Airbnb's geocoder covers addresses and areas but not business names
+      // (verified live: its own search box draws a blank on shops the map
+      // tiles label). Dead-ending here would look broken, so say what works.
+      showMsg("Airbnb only knows addresses and areas. For a shop or landmark, "
+        + "find it on Google Maps and paste its link or coordinates here.");
+      return;
+    }
     drop.hidden = false; drop.textContent = "";
     for (const s of sugs) {
       const b = document.createElement("button");
@@ -753,6 +861,51 @@ function buildPlaceBar() {
     Store.setSetting("refPlace", null);
   });
   return bar;
+}
+
+/* --- your place, on the map ----------------------------------------------
+   The map is Google's, so there is no addMarker for us; but the visible price
+   markers each carry their own lat/lng and screen rect, and two of those pin
+   down the map's whole screen transform (Filter.fitMapProjection). The pin is
+   our own element laid over the map at wherever the reference place projects
+   to, re-placed on every decorate pass and the 700ms backstop, which is the
+   same cadence that keeps everything else glued to Airbnb's map. */
+let refPinEl = null;
+function syncRefPin() {
+  const map = mapElement();
+  if (!refPlace || !map) {
+    if (refPinEl) { refPinEl.remove(); refPinEl = null; }
+    return;
+  }
+  const pts = [];
+  for (const m of document.querySelectorAll("gmp-advanced-marker")) {
+    const c = parsePos(m.getAttribute("position"));
+    if (!c || m.style.display === "none") continue;
+    // The marker element is a ZERO-SIZE point at its coordinate (the visible
+    // pill is an inner child, measured live: self w=0 h=0, pill centred on
+    // it). So its rect corner IS the anchor; never require a width here.
+    const r = m.getBoundingClientRect();
+    if (!r.left && !r.top) continue;   // unrendered markers pile up at 0,0
+    pts.push({ lat: c.lat, lng: c.lng, x: r.left, y: r.top });
+  }
+  const fit = typeof Filter !== "undefined" ? Filter.fitMapProjection(pts) : null;
+  const p = fit && Filter.projectPoint(fit, refPlace.lat, refPlace.lng);
+  const mr = map.getBoundingClientRect();
+  const visible = p && mr.width
+    && p.x >= mr.left && p.x <= mr.right && p.y >= mr.top && p.y <= mr.bottom;
+  if (!visible) { if (refPinEl) refPinEl.style.display = "none"; return; }
+  if (!refPinEl || !document.contains(refPinEl)) {
+    refPinEl = document.createElement("div");
+    refPinEl.className = "archiver-refpin";
+    const tag = document.createElement("div"); tag.className = "archiver-refpin-tag"; tag.textContent = "Your place";
+    const tip = document.createElement("div"); tip.className = "archiver-refpin-tip"; tip.textContent = "📍";
+    refPinEl.append(tag, tip);
+    document.body.appendChild(refPinEl);
+  }
+  refPinEl.style.display = "";
+  refPinEl.title = refPlace.raw || "";
+  refPinEl.style.left = Math.round(p.x) + "px";
+  refPinEl.style.top = Math.round(p.y) + "px";
 }
 
 // Reflect the stored place in the bar. Never touches the input while it has
@@ -1229,21 +1382,57 @@ function distText(id) {
 // dateless quote is Airbnb's default and saying "for 5 nights" about it is a lie.
 function stayText(price) {
   const st = currentStay();
-  if (st && st.months) return plural(st.months, "month") + " selected";
+  if (st && st.months) return "Your stay: " + plural(st.months, "month");
   if (!st) return price && price.nights ? "no dates selected" : "";
-  if (price && price.total != null && price.nights) {
-    const range = fmtStayRange(st);
-    return fmtMoney(price.symbol, price.total) + " for " + plural(price.nights, "night")
-      + (range ? "  ·  " + range : "");
-  }
   const range = fmtStayRange(st);
-  return plural(st.nights, "night") + (range ? "  ·  " + range : "");
+  const when = plural(st.nights, "night") + (range ? "  ·  " + range : "");
+  if (price && price.total != null && price.nights) {
+    return "Your stay: " + fmtMoney(price.symbol, price.total) + " for " + when;
+  }
+  return "Your stay: " + when;
+}
+/* Every discount step this listing offers, whether or not the current search
+   reaches it. The learned ladder wins; until it lands, show whatever tier the
+   current quote happens to contain so the row is never blank. */
+function discountLadder(id, price) {
+  const l = discounts[id];
+  if (l && Array.isArray(l.steps)) return l.steps;
+  const d = price && price.discount;
+  return d && d.pct > 0 ? [{ minNights: d.minNights, pct: d.pct, label: d.label }] : [];
+}
+// Mark the one your stay actually reaches (the highest threshold you clear) and
+// hang the money off it, since the money depends on the period and the
+// percentages do not.
+function discountSteps(id, price) {
+  const st = currentStay();
+  const nights = (st && st.nights) || (price && price.nights) || null;
+  const steps = discountLadder(id, price).map((s) => ({
+    minNights: s.minNights == null ? null : s.minNights,
+    pct: s.pct,
+    label: s.label || "",
+    on: false,
+    saves: "",
+  }));
+  let best = -1;
+  steps.forEach((s, i) => {
+    if (nights != null && s.minNights != null && nights >= s.minNights) {
+      if (best < 0 || (steps[best].minNights || 0) <= s.minNights) best = i;
+    }
+  });
+  if (best >= 0) {
+    steps[best].on = true;
+    const d = price && price.discount;
+    if (d && d.amount != null && d.pct === steps[best].pct) {
+      steps[best].saves = fmtMoney(price.symbol, d.amount);
+    }
+  }
+  return steps;
 }
 function priceText(id) {
   const { price } = mediaOf(id);
   if (price && price.unavailable) {
     return {
-      head: "Unavailable", unit: "", muted: true, stay: stayText(null),
+      head: "Unavailable", unit: "", muted: true, stay: stayText(null), discounts: [],
       sub: price.lastMonthly != null
         ? "last seen " + fmtMoney(price.symbol, price.lastMonthly) + " / 30 nights"
         : "not offered for these dates",
@@ -1252,15 +1441,10 @@ function priceText(id) {
   if (price && price.monthly != null) {
     const st = currentStay();
     const bits = [];
-    // What the discount actually is: from how many nights it starts, what
-    // percentage it takes off, and what that is in money. "Airbnb monthly rate"
-    // used to sit here and said none of that.
-    const dsc = price.discount;
-    if (dsc && dsc.pct > 0) {
-      bits.push((dsc.minNights ? dsc.minNights + "+ nights: " : "")
-        + dsc.pct + "% off, saves " + fmtMoney(price.symbol, dsc.amount));
-    } else if (price.original != null && price.original > price.monthly) {
-      // No breakdown to read (an older cached quote): at least say it is reduced.
+    // Fallback only: with no ladder learned yet and no itemised breakdown, at
+    // least say the price is reduced.
+    if (!discountLadder(id, price).length
+        && price.original != null && price.original > price.monthly) {
       bits.push("reduced from " + fmtMoney(price.symbol, price.original));
     }
     return {
@@ -1268,6 +1452,7 @@ function priceText(id) {
       unit: "/ 30 nights",
       perDay: price.nightly != null ? fmtMoney(price.symbol, price.nightly) + " / night" : "",
       stay: stayText(price),
+      discounts: discountSteps(id, price),
       sub: bits.join("  ·  "),
       // Quoted for a different search than the one on screen, so a probe is on
       // its way. A nights count that disagrees with the selected period says the
@@ -1277,7 +1462,37 @@ function priceText(id) {
     };
   }
   const raw = snapOf(id).price || "";
-  return { head: raw || "-", unit: "", perDay: "", stay: "", sub: raw ? "" : "checking price…", stale: true };
+  return { head: raw || "-", unit: "", perDay: "", stay: "", discounts: [], sub: raw ? "" : "checking price…", stale: true };
+}
+
+/* The discount ladder as its own line: every step the listing offers, with the
+   one your stay reaches marked and carrying the money. Built as elements rather
+   than a string so the active step can be styled: which tier you are on is the
+   thing you are reading this line for. */
+function renderDiscounts(el, p) {
+  el.textContent = "";
+  const steps = (p && p.discounts) || [];
+  if (!steps.length) {
+    el.textContent = (p && p.sub) || "";
+    el.style.display = el.textContent ? "" : "none";
+    return;
+  }
+  el.style.display = "";
+  steps.forEach((s, i) => {
+    if (i) {
+      const sep = document.createElement("span");
+      sep.className = "archiver-disc-sep"; sep.textContent = "·";
+      el.appendChild(sep);
+    }
+    const b = document.createElement("span");
+    b.className = "archiver-disc" + (s.on ? " archiver-disc--on" : "");
+    b.textContent = (s.minNights != null ? s.minNights + "+ nights " : "")
+      + s.pct + "% off" + (s.on && s.saves ? ", saves " + s.saves : "");
+    b.title = s.on
+      ? "This is the discount your stay qualifies for"
+      : (s.minNights != null ? "Stay " + s.minNights + " nights or more to get this" : s.label);
+    el.appendChild(b);
+  });
 }
 
 // Which photo each listing is showing. A re-render (a price landing, a note
@@ -1382,7 +1597,8 @@ function panelRow(id) {
   stay.className = "archiver-row-stay"; stay.textContent = p.stay || "";
   if (!p.stay) stay.style.display = "none";
 
-  const sub = document.createElement("div"); sub.className = "archiver-row-sub"; sub.textContent = p.sub;
+  const sub = document.createElement("div"); sub.className = "archiver-row-sub";
+  renderDiscounts(sub, p);
 
   // How far from the place the user pinned in the popup (Booking-style).
   const dist = document.createElement("div");
@@ -1525,6 +1741,7 @@ function renderPanel() {
     for (const row of list.querySelectorAll(".archiver-row")) updateRow(row);
     try { schedulePriceProbes([...g.shown, ...g.unplaced]); } catch (_) {}
     try { scheduleHostLookups([...g.shown, ...g.unplaced]); } catch (_) {}
+    try { scheduleLadders([...g.shown, ...g.unplaced]); } catch (_) {}
     return;
   }
 
@@ -1559,6 +1776,7 @@ function renderPanel() {
   // looked up if we don't have one yet.
   try { schedulePriceProbes([...g.shown, ...g.unplaced]); } catch (e) { console.warn("[Archiver] probe scheduling", e); }
   try { scheduleHostLookups([...g.shown, ...g.unplaced]); } catch (e) { console.warn("[Archiver] host lookup", e); }
+  try { scheduleLadders([...g.shown, ...g.unplaced]); } catch (e) { console.warn("[Archiver] discount ladder", e); }
 }
 function divider(text) {
   const d = document.createElement("div");
@@ -1690,7 +1908,7 @@ function updateRow(row) {
   const stay = row.querySelector(".archiver-row-stay");
   if (stay) { stay.textContent = p.stay || ""; stay.style.display = p.stay ? "" : "none"; }
   const sub = row.querySelector(".archiver-row-sub");
-  if (sub) sub.textContent = p.sub;
+  if (sub) renderDiscounts(sub, p);
   const dist = row.querySelector(".archiver-row-dist");
   if (dist) { const t = distText(row.dataset.id); dist.textContent = t; dist.style.display = t ? "" : "none"; }
   const hostRow = row.querySelector(".archiver-row-host");
@@ -2005,6 +2223,7 @@ function decorateAll() {
   try { colorMarkers(resolved); } catch (e) { console.warn("[Archiver] colorMarkers", e); }
   try { positionPanel(); } catch (e) { console.warn("[Archiver] positionPanel", e); }
   try { syncPanelToMap(); } catch (e) { console.warn("[Archiver] syncPanelToMap", e); }
+  try { syncRefPin(); } catch (e) { console.warn("[Archiver] syncRefPin", e); }
   try { decorateBridge(); } catch (e) { console.warn("[Archiver] decorateBridge", e); }
 }
 const observer = new MutationObserver(debounce(decorateAll, 250));
@@ -2026,7 +2245,7 @@ async function start() {
   // Re-place the panel on the same backstop. Geometry can change with no DOM
   // mutation to observe (the search bar expanding, a late font, the map getting
   // its size), and without this a panel hidden at first render never recovers.
-  setInterval(() => { syncPanelToMap(); try { positionPanel(); } catch (e) {} }, 700);
+  setInterval(() => { syncPanelToMap(); try { positionPanel(); } catch (e) {} try { syncRefPin(); } catch (e) {} }, 700);
   // Prices expire and probes get blocked; both are fixed by asking again a bit
   // later, so don't make it wait for the next render.
   setInterval(sweepProbes, PROBE_SWEEP_MS);

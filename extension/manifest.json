@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "OneBNB: Airbnb Prices, Shortlist & Chat",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "description": "Your whole Airbnb search on one screen: true nightly prices, hide what you've ruled out, star and note the rest, and chat without leaving the results. Beta, under active development. Unofficial: not affiliated with Airbnb, Inc.",
   "homepage_url": "https://github.com/noamzilo/airbnb_filter",
   "browser_specific_settings": {

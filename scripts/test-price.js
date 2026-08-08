@@ -164,6 +164,13 @@ check("monthly-mode search still reports its discount",
   Filter.priceOf(monthly).discount && Filter.priceOf(monthly).discount.kind === "monthly",
   JSON.stringify(Filter.priceOf(monthly).discount));
 
+// Date arithmetic for the ladder probes (one at 7 nights, one at 28).
+check("addDays basic", Filter.addDays("2026-09-01", 7) === "2026-09-08");
+check("addDays across a month", Filter.addDays("2026-09-01", 28) === "2026-09-29");
+check("addDays across a year", Filter.addDays("2026-12-20", 28) === "2027-01-17");
+check("addDays across a leap day", Filter.addDays("2028-02-27", 7) === "2028-03-05");
+check("addDays rejects junk", Filter.addDays("soon", 7) === null);
+
 /* ---- probe plumbing ---- */
 const MONTHLY_SEARCH = "?adults=1&refinement_paths%5B%5D=%2Fhomes&flexible_trip_lengths%5B%5D=one_month"
   + "&monthly_start_date=2026-09-01&monthly_length=3&monthly_end_date=2026-12-01"

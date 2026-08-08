@@ -175,6 +175,27 @@ airbnb.com, so the address lookup is *Airbnb's own* place search, two hops
    (`"precision":"street"`). One ~800 KB fetch per place *set*, never per
    keystroke.
 
+**The "Your place" pin on the map.** Google's map gives us no marker API, but
+every visible price marker is a `gmp-advanced-marker` carrying its own
+lat/lng (`position` attr) and a screen rect, and the element itself is a
+zero-size point sitting exactly at its coordinate (the visible pill is an
+inner child; measured live, `scripts/repro_refpin.py`). Web Mercator is
+linear in lng for x and in mercator-lat for y at a fixed zoom, so
+`Filter.fitMapProjection` least-squares those anchors into the map's screen
+transform and `Filter.projectPoint` places the reference point;
+`syncRefPin()` lays a fixed-position pin there (pointer-events: none), hides
+it when it projects outside the map, and re-fits on every decorate pass and
+the 700ms backstop, so it rides pans and zooms like everything else. Markers
+piled at 0,0 are unrendered and excluded from the fit.
+
+**Businesses / POIs are out of reach**: the map labels shops because Google's
+tiles do, but no reachable geocoder knows them: Airbnb's own search box
+returns nothing for a shop the tiles label (verified live with a real
+session), and so do Nominatim and Photon (OSM). Only Google's paid Places API
+could, and that would leave the browser. The no-match message in the bar
+says exactly this and points at the paste route, which handles businesses
+fine via a copied Maps link.
+
 `Filter.parsePlace` still short-circuits the whole flow for pasted
 coordinates or Google Maps links: plain "lat, lng" (what Maps' right-click
 "copy coordinates" gives), the `!3d<lat>!4d<lng>` pair of a place link

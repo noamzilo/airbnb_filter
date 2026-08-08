@@ -16,7 +16,7 @@ from selenium.webdriver.common.keys import Keys
 URL = ("https://www.airbnb.com/s/Asuncion--Paraguay/homes"
        "?adults=1&ne_lat=-25.26&ne_lng=-57.55&sw_lat=-25.32&sw_lng=-57.60"
        "&zoom=15&search_by_map=true")
-QUERY = "Mariscal Lopez 3374, Asuncion"
+QUERY = " ".join(a for a in sys.argv[1:] if not a.startswith("--")) or "Mariscal Lopez 3374, Asuncion"
 
 opts = Options()
 if "--headed" not in sys.argv:
@@ -49,6 +49,14 @@ try:
         for ch in QUERY:
             box.send_keys(ch); time.sleep(0.05)
         time.sleep(2.5)
+
+    # What Airbnb's OWN dropdown offers for this query - the ceiling of what
+    # any reuse of their geocoder can do.
+    own = d.execute_script("""
+      return [...document.querySelectorAll('[data-testid*="option"], [role="option"]')]
+        .map(e=>e.textContent.trim()).filter(Boolean).slice(0,8);
+    """)
+    print("\nAirbnb's own dropdown offers:", json.dumps(own, ensure_ascii=False))
 
     urls = d.execute_script("""
       return performance.getEntriesByType('resource').map(e=>e.name)

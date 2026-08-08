@@ -34,6 +34,10 @@ window.Store={
     if(n)fire({prices:{}});return n>0;},
   getNotes:async()=>window.__notes,setNote:async(i,t)=>{if(t&&t.trim())window.__notes[i]=t;else delete window.__notes[i];fire({notes:{}});},
   getCollapsed:async()=>window.__collapsed||{},setCollapsed:async(m)=>{window.__collapsed={...m};fire({collapsed:{}});},
+  getDiscounts:async()=>window.__discounts||{},
+  setDiscounts:async(e)=>{window.__discounts=window.__discounts||{};let n=0;
+    for(const id in e){if(JSON.stringify(window.__discounts[id])!==JSON.stringify(e[id])){window.__discounts[id]=e[id];n++;}}
+    if(n)fire({discounts:{}});return n>0;},
   getOrder:async()=>window.__order,setOrder:async(a)=>{window.__order=a;fire({order:{}});},
   getSettings:async()=>window.__settings,setSetting:async(k,v)=>{window.__settings[k]=v;fire({settings:{}});}
 };

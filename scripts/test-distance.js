@@ -111,5 +111,35 @@ check("page with no bounds gives null",
   Filter.boundsCenterFromHtml("<html>no map here</html>") === null
   && Filter.boundsCenterFromHtml("") === null);
 
+/* ---- placing a coordinate on the map from visible markers ---- */
+// Synthesise markers through a known Web Mercator screen transform, fit, and
+// the fit must reproduce the transform for a point it never saw.
+const AX = 8000, BX = 461480, AY = -9000, BY = -4180;
+const px = (lng) => AX * lng + BX;
+const py = (lat) => AY * Filter.mercY(lat) + BY;
+const MARKERS = [
+  { lat: -25.280, lng: -57.640 }, { lat: -25.295, lng: -57.610 }, { lat: -25.310, lng: -57.580 },
+].map((c) => ({ ...c, x: px(c.lng), y: py(c.lat) }));
+
+const fit = Filter.fitMapProjection(MARKERS);
+const target = { lat: -25.2909, lng: -57.5921 };   // the geocoded street from above
+const proj = fit && Filter.projectPoint(fit, target.lat, target.lng);
+check("marker fit recovers the map's transform",
+  proj && near(proj.x, px(target.lng), 0.01) && near(proj.y, py(target.lat), 0.01), JSON.stringify(proj));
+check("a jittered marker only nudges the fit",
+  (() => {
+    const noisy = MARKERS.concat([{ lat: -25.2905, lng: -57.6005, x: px(-57.6005) + 6, y: py(-25.2905) - 6 }]);
+    const p = Filter.projectPoint(Filter.fitMapProjection(noisy), target.lat, target.lng);
+    return p && near(p.x, px(target.lng), 6) && near(p.y, py(target.lat), 6);
+  })());
+check("one marker is not enough", Filter.fitMapProjection(MARKERS.slice(0, 1)) === null);
+check("markers on one vertical line can't fix x",
+  Filter.fitMapProjection([
+    { lat: -25.28, lng: -57.6, x: 100, y: 50 }, { lat: -25.30, lng: -57.6, x: 100, y: 260 },
+  ]) === null);
+check("garbage points are ignored",
+  Filter.fitMapProjection([{ lat: NaN, lng: 1, x: 1, y: 1 }, MARKERS[0]]) === null);
+check("projecting with no fit is null", Filter.projectPoint(null, -25, -57) === null);
+
 console.log(fails ? `\n${fails} FAILED` : "\nALL PASS");
 process.exit(fails ? 1 : 0);
