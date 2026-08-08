@@ -100,7 +100,7 @@ p = Filter.priceOf(perNight);
 check("nightly -> 30 nights", p.monthly === 3600, JSON.stringify(p));
 
 check("no price line", Filter.priceOf({}) === null);
-check("garbage price", Filter.priceOf({ structuredDisplayPrice: { primaryLine: { price: "—" } } }) === null);
+check("garbage price", Filter.priceOf({ structuredDisplayPrice: { primaryLine: { price: "-" } } }) === null);
 
 /* ---- probe plumbing ---- */
 const MONTHLY_SEARCH = "?adults=1&refinement_paths%5B%5D=%2Fhomes&flexible_trip_lengths%5B%5D=one_month"

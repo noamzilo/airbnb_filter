@@ -1,18 +1,18 @@
 # Installing the Airbnb Archiver in normal Firefox
 
 The extension is a self-distributed, Mozilla-signed add-on. Normal (release)
-Firefox only installs **signed** add-ons permanently — which this is — so you can
+Firefox only installs **signed** add-ons permanently - which this is - so you can
 install it like any `.xpi`.
 
 ## First install (one click, no restart)
 
 1. Open **`about:addons`** in Firefox.
 2. Click the **gear ⚙** (top-right) → **Install Add-on From File…**.
-3. Select the latest signed file in `web-ext-artifacts/` — e.g.
+3. Select the latest signed file in `web-ext-artifacts/` - e.g.
    `web-ext-artifacts\4bed07c0cfd5440ebbe9-0.1.0.xpi`.
 4. Click **Add** on the permission prompt.
 
-It installs immediately into the running Firefox — no restart, tabs untouched.
+It installs immediately into the running Firefox - no restart, tabs untouched.
 Then **stop the dev runner** (`Ctrl+C` on `npm run dev`) so you don't have two
 copies adding buttons.
 
@@ -21,14 +21,17 @@ copies adding buttons.
 ## Updating
 
 Updates are **not** automatic for a self-distributed add-on (see "Auto-updates"
-below). To ship a change:
+below), but you don't install them by hand either. Run the skill
+**`/update-extension`** (or ask Claude to "update the extension") and it does the
+whole thing: bump the version, lint, self-test, AMO-sign, copy the signed `.xpi`
+into your profile, and restart Firefox **with every window and tab restored**.
 
-1. Run the skill **`/update-extension`** (or ask Claude to "update the
-   extension"). It bumps the version, lints, self-tests, AMO-signs, and prints
-   the path of the new `.xpi`.
-2. Install that new `.xpi` exactly like the first install (Install Add-on From
-   File). It **upgrades in place** — same add-on id (`airbnb-archiver@noam.local`),
-   so your archived/liked lists are preserved.
+No `about:addons`, no file picker, no "please restart your browser". It
+**upgrades in place** - same add-on id (`airbnb-archiver@noam.local`) - so your
+archived / liked / maybe lists, notes and order are preserved.
+
+> The manual route above still works if you ever want it: `npm run sign` leaves
+> the signed `.xpi` in `web-ext-artifacts/` and you can install it from file.
 
 ## Your data
 
@@ -45,7 +48,7 @@ Firefox checks for updates on startup and ~daily and pulls new versions silently
 
 - **GitHub Releases** host the `.xpi` + an `updates.json`; `update_url` points at
   the raw `updates.json`. Stays private (unlisted), fully automatic.
-- **Listed on AMO** (public, searchable) — Firefox auto-updates from AMO with no
+- **Listed on AMO** (public, searchable) - Firefox auto-updates from AMO with no
   hosting, but the add-on becomes publicly listed.
 
 Ask Claude to set up the GitHub auto-update flow if you want zero-click updates.

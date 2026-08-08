@@ -1,5 +1,5 @@
 # Drive Firefox with the extension loaded, run a JS probe, print compact JSON.
-# No screenshots — everything comes back as text so it's cheap.
+# No screenshots - everything comes back as text so it's cheap.
 #
 # Usage:
 #   python scripts/drive.py                      # run built-in probe

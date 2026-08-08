@@ -4,7 +4,7 @@
 // bump -> sign -> install + restart Firefox) rather than leaving the ship for
 // the user to trigger by hand.
 //
-// Deliberately NOT a Stop hook — the user does not want a ship attempt at the
+// Deliberately NOT a Stop hook - the user does not want a ship attempt at the
 // end of every main-loop turn, only when an agent declares a feature done.
 //
 // "Unshipped" == some file in extension/ is newer than the newest signed .xpi in
@@ -85,8 +85,8 @@ process.stdin.on('end', () => {
         'follow it end to end (lint, self-test, bump, sign, ' +
         '`npm run install:local -- --restart`), then include the installed ' +
         'version in what you return. Do not hand the ship back to the user.\n\n' +
-        'If the feature is NOT actually done — the change is half-written, or a ' +
-        'test is failing — do not ship. Say so in one line and finish; this hook ' +
+        'If the feature is NOT actually done - the change is half-written, or a ' +
+        'test is failing - do not ship. Say so in one line and finish; this hook ' +
         'will not fire again for you.',
     })
   );

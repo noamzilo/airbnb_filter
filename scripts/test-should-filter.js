@@ -23,7 +23,7 @@ check("missing settings object leaves documents alone", Filter.shouldFilter(doc,
 check("documents skipped when off", Filter.shouldFilter(doc, OFF), false);
 check("documents filtered when explicitly on", Filter.shouldFilter(doc, ON), true);
 
-// The XHR path is the one that does the real work — never gate it on the flag.
+// The XHR path is the one that does the real work - never gate it on the flag.
 check("XHR filtered when documents are off", Filter.shouldFilter(xhr, OFF), true);
 check("XHR filtered when documents are on", Filter.shouldFilter(xhr, ON), true);
 

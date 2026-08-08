@@ -64,7 +64,7 @@ const done = arguments[arguments.length - 1];
   const m = text.match(/"(?:accessibilityLabel|priceString|discountedPrice)"\s*:\s*"[^"]{0,60}"/g);
   out.rawPriceStrings = m ? [...new Set(m)].slice(0, 12) : [];
   // Does the room page at least carry a coordinate? (A coordinate is enough to
-  // probe the price via a scoped search — see recon_probe.py.)
+  // probe the price via a scoped search - see recon_probe.py.)
   const lat = text.match(/"lat(?:itude)?"\s*:\s*(-?\d+\.\d+)/g);
   const lng = text.match(/"l(?:ng|ongitude)"\s*:\s*(-?\d+\.\d+)/g);
   out.coordHits = { lat: lat ? [...new Set(lat)].slice(0, 5) : [], lng: lng ? [...new Set(lng)].slice(0, 5) : [] };

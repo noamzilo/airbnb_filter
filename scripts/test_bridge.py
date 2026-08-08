@@ -10,10 +10,12 @@ from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+from lib_stub import STUB          # was scraped out of test_decorator.py, which
+                                   # stopped holding it when it moved to lib_stub
 FILTER = (ROOT / "extension" / "filter.js").read_text(encoding="utf-8")
 CONTENT = (ROOT / "extension" / "content.js").read_text(encoding="utf-8")
 STYLES = (ROOT / "extension" / "content.css").read_text(encoding="utf-8")
-STUB = (ROOT / "scripts" / "test_decorator.py").read_text(encoding="utf-8").split('STUB = r"""')[1].split('"""')[0]
 
 ROOM = "1239210296375530793"   # the user's example apartment
 

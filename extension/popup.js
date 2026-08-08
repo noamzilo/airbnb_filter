@@ -1,4 +1,4 @@
-// Airbnb Archiver — popup: Liked / Maybe / Archived tabs.
+// Airbnb Archiver - popup: Liked / Maybe / Archived tabs.
 
 const toggleEl = document.getElementById("showArchived");
 const rewriteEl = document.getElementById("rewriteDocuments");

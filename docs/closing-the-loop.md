@@ -1,39 +1,39 @@
 # Closing the loop: self-testing the extension
 
 ## Why
-Iterating on this extension by hand — *Claude edits, the user clicks around on
-Airbnb and reports what happened* — is slow and error-prone. The map behaviour in
+Iterating on this extension by hand - *Claude edits, the user clicks around on
+Airbnb and reports what happened* - is slow and error-prone. The map behaviour in
 particular depends on Airbnb's live, client-rendered DOM (obfuscated classes,
 Google Maps web-component markers) that can't be reasoned about from source.
 
 So Claude drives a **real Firefox** with Selenium, exercises the actual flows on
-the live Airbnb page, and verifies outcomes **as text/JSON — never screenshots**
+the live Airbnb page, and verifies outcomes **as text/JSON - never screenshots**
 (screenshots are far too token-expensive). This lets Claude find and fix DOM
 issues without the user in the loop.
 
 ## The harness
-- `scripts/drive.py` — launch Firefox, open the search, run a JS probe, print
+- `scripts/drive.py` - launch Firefox, open the search, run a JS probe, print
   compact JSON. (`--headed`, `--click-pill N`, or a `.js` probe file.)
-- `scripts/probe.js` — generic DOM diagnostic (counts, map rect, price pills).
-- `scripts/recon_map.py` — open a map marker's popup card and dump its structure.
-- `scripts/test_decorator.py` — **the regression test.** Drives the real archive
+- `scripts/probe.js` - generic DOM diagnostic (counts, map rect, price pills).
+- `scripts/recon_map.py` - open a map marker's popup card and dump its structure.
+- `scripts/test_decorator.py` - **the regression test.** Drives the real archive
   / star flows and asserts DOM outcomes. Run it after any `content.js` change:
   ```
   python scripts/test_decorator.py
   ```
-- `scripts/test-filter.js` — Node unit test for the pure interceptor logic
+- `scripts/test-filter.js` - Node unit test for the pure interceptor logic
   (`node scripts/test-filter.js`; needs `state.json` from recon).
-- `scripts/test-price.js` — Node unit test for money parsing + the per-30-nights
+- `scripts/test-price.js` - Node unit test for money parsing + the per-30-nights
   price normalisation, against synthetic shapes *and* the real `state.json`.
-- `scripts/probe_panel.js` — panel geometry diagnostic (computed styles, boxes,
+- `scripts/probe_panel.js` - panel geometry diagnostic (computed styles, boxes,
   scrollHeight vs clientHeight). Use it when the panel lays out or scrolls wrong.
-- `scripts/recon_bounds.py` — confirms the map's live viewport is readable from
+- `scripts/recon_bounds.py` - confirms the map's live viewport is readable from
   the URL (`ne_lat/ne_lng/sw_lat/sw_lng`) by panning/zooming and re-reading it.
-- `scripts/recon_pdp.py` / `scripts/recon_probe.py` — how live price probing was
+- `scripts/recon_pdp.py` / `scripts/recon_probe.py` - how live price probing was
   established: the `/rooms/<id>` page has **no price** (only a coordinate), but a
   search scoped to a tiny box around that coordinate does. Re-run these if
   probing ever starts returning "Unavailable" for everything.
-- `scripts/recon_price.py` — dumps every distinct `structuredDisplayPrice` shape
+- `scripts/recon_price.py` - dumps every distinct `structuredDisplayPrice` shape
   on a search and reports what fraction `Filter.priceOf` can normalise. Run it
   against a *new kind of search* (monthly, nightly, no dates, other currency)
   whenever a price shows as "price not captured yet".
@@ -48,7 +48,7 @@ its content scripts** in this setup (verified even on example.com). So
 1. loads the live Airbnb search page (no extension),
 2. injects a tiny in-memory `Store` / `browser` **stub** plus the real
    `extension/filter.js`, `content.js` **and `content.css`** via
-   `execute_script` — the stylesheet matters: without it nothing about layout,
+   `execute_script` - the stylesheet matters: without it nothing about layout,
    geometry or scrolling is actually being tested (this hid a real bug),
 3. drives the flows (star a card, click a map pin, click our trash) and asserts
    the DOM result (toolbars present, card hidden, marker hidden, toast shown,
@@ -63,7 +63,7 @@ storage/back­ground are stubbed. The real extension is still run normally via
   the listing's *title + price*; there is **no `/rooms` link / id** on them. We
   match a marker to a listing by **title**.
 - **The popup card renders *inside* the selected marker.** So our injected trash
-  button lives inside the marker subtree — the marker-click capture listener must
+  button lives inside the marker subtree - the marker-click capture listener must
   ignore clicks on our own UI, and marker-text parsing strips our glyphs.
 - **Google Maps re-creates marker elements on render**, so a one-time
   `display:none` doesn't stick. `decorateAll()` re-hides archived markers on every

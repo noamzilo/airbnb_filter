@@ -1,7 +1,7 @@
 # Where does "pets allowed" live?
-#   1. On a /rooms/<id> page — we already fetch that page for the host name, so
+#   1. On a /rooms/<id> page - we already fetch that page for the host name, so
 #      if the answer is in there it is free.
-#   2. In a /s/ search response — is there anything per-listing we could read
+#   2. In a /s/ search response - is there anything per-listing we could read
 #      without a second fetch?
 # Prints every pet-ish string with JSON context, plus amenity-ish blocks.
 

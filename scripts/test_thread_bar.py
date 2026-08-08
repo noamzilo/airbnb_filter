@@ -18,12 +18,13 @@ import sys, time, pathlib, shutil
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from lib_profile import copy_profile, firefox_on_copy, open_first_thread
+from lib_stub import STUB          # was scraped out of test_decorator.py, which
+                                   # stopped holding it when it moved to lib_stub
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FILTER = (ROOT / "extension" / "filter.js").read_text(encoding="utf-8")
 CONTENT = (ROOT / "extension" / "content.js").read_text(encoding="utf-8")
 STYLES = (ROOT / "extension" / "content.css").read_text(encoding="utf-8")
-STUB = (ROOT / "scripts" / "test_decorator.py").read_text(encoding="utf-8").split('STUB = r"""')[1].split('"""')[0]
 
 headed = "--headed" in sys.argv
 url = next((a for a in sys.argv[1:] if a.startswith("http")), None)

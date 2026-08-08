@@ -1,4 +1,4 @@
-// Airbnb Archiver — pure filtering logic over Airbnb's search JSON.
+// Airbnb Archiver - pure filtering logic over Airbnb's search JSON.
 // Loaded in the background page (see manifest). No DOM, no storage here so it
 // stays trivially testable with Node (see scripts/test-filter.mjs).
 //
@@ -141,16 +141,16 @@ const Filter = {
 
   // Normalised price for a listing: { monthly, nightly, total, nights, symbol,
   // original, basis }. Airbnb quotes cards three different ways depending on the
-  // search — a stay total ("$564 for 14 nights"), a nightly rate, or a monthly
+  // search - a stay total ("$564 for 14 nights"), a nightly rate, or a monthly
   // rate on a monthly-stay search ("$4,883 monthly, originally $6,675",
-  // displayPriceStyle MONTHLY, verified live via scripts/recon_price.py) — so
+  // displayPriceStyle MONTHLY, verified live via scripts/recon_price.py) - so
   // reduce all of them to one 30-night figure you can actually compare.
   priceOf(item) {
     const sdp = item && item.structuredDisplayPrice;
     const pl = sdp && sdp.primaryLine;
     if (!pl) return null;
     const label = pl.accessibilityLabel || [pl.discountedPrice || pl.price, pl.qualifier].filter(Boolean).join(" ");
-    // DiscountedDisplayPriceLine has no `price` — take what you'd actually pay.
+    // DiscountedDisplayPriceLine has no `price` - take what you'd actually pay.
     const priceStr = pl.discountedPrice || pl.price || label;
     const amount = Filter.parseMoney(priceStr);
     if (amount == null) return null;
@@ -216,7 +216,7 @@ const Filter = {
     } catch (_) { return ""; }
   },
 
-  // A search scoped to a tiny box around one listing — this is how a saved
+  // A search scoped to a tiny box around one listing - this is how a saved
   // listing's price gets refreshed. The /rooms/<id> page carries NO price at all
   // (verified, scripts/recon_pdp.py) but /s/ server-renders one. Only
   // price-setting params are carried over: copying the user's filters too would
@@ -397,8 +397,11 @@ const Filter = {
   },
 
   // Record each listing's array objects + coordinate into `seen` (mutated).
+  // Returns the ids touched, so the caller can age the cache out (`seen` is a
+  // warm cache, not a record - see touchSeen in background.js).
   collectSeen(root, seen) {
     const arr = Filter.locateArrays(root);
+    const touched = [];
     const note = (it, field) => {
       const id = Filter.itemId(it);
       if (!id) return;
@@ -406,10 +409,12 @@ const Filter = {
       e[field] = it;
       const c = Filter.coordOf(it);
       if (c) e.coord = c;
+      touched.push(id);
     };
     (arr.searchResults || []).forEach((it) => note(it, "searchResult"));
     (arr.mapSearchResults || []).forEach((it) => note(it, "mapResult"));
     (arr.staysInViewport || []).forEach((it) => note(it, "viewportPin"));
+    return touched;
   },
 
   // Bounding box of listings actually returned (null if fewer than 2 coords).

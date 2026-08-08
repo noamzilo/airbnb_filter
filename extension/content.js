@@ -1,4 +1,4 @@
-// Airbnb Archiver — content script.
+// Airbnb Archiver - content script.
 // Replaces Airbnb's results column with our own curated panel (one combined,
 // reorderable, commentable list of starred + maybe listings), keeps the map as
 // the discovery surface (tag from pin popups), colours starred pins blue / maybe
@@ -12,6 +12,7 @@ let notes = {};
 let order = [];
 let images = {};
 let prices = {};
+let collapsed = {};   // id -> true, rows shown as a compact strip
 let showArchived = false;
 let showAllPlaces = false;   // bypass the "only what's on the map" filter
 
@@ -23,6 +24,7 @@ async function loadState() {
   tagCoords = await Store.getTagCoords();
   notes = await Store.getNotes();
   order = await Store.getOrder();
+  collapsed = (Store.getCollapsed ? await Store.getCollapsed() : {}) || {};
   images = await Store.getImages();
   prices = (Store.getPrices ? await Store.getPrices() : {}) || {};
   hosts = (Store.getHosts ? await Store.getHosts() : {}) || {};
@@ -30,6 +32,13 @@ async function loadState() {
   const s = await Store.getSettings();
   showArchived = s.showArchived;
   showAllPlaces = !!s.showAllPlaces;
+  // Which listing each map pin is depends on all of the above, so any reload
+  // invalidates the resolution.
+  taggedPointsCache = null;
+  resolvedCache = null;
+  // A trash whose commit has landed is no longer "pending" - the archived set
+  // itself now holds the pin down.
+  for (const id of [...pendingArchive]) if (cats.archived[id]) pendingArchive.delete(id);
 }
 
 browser.storage.onChanged.addListener(async (changes) => {
@@ -48,6 +57,33 @@ function truncate(s, n) { return s && s.length > n ? s.slice(0, n - 1) + "…" :
 function idFromHref(href) { const m = href && href.match(/\/rooms\/(\d+)/); return m ? m[1] : null; }
 function decodeId(b64) { try { const d = atob(b64); const m = d.match(/:(\d+)\s*$/); return m ? m[1] : null; } catch (_) { return null; } }
 function catOf(id) { return cats.starred[id] ? "starred" : cats.maybe[id] ? "maybe" : cats.archived[id] ? "archived" : null; }
+/* --- collapsed rows ------------------------------------------------------
+   A collapsed row is the same row in the same slot, just a strip: photo, price
+   and its buttons, nothing else. It keeps its drag handle, so tidying the list
+   never costs you the ability to reorder it. Persisted, so a list you tidied is
+   still tidy after a reload. */
+function isCollapsed(id) { return !!collapsed[id]; }
+function rowClass(id, cat, extra) {
+  return "archiver-row archiver-row--" + cat
+    + (isCollapsed(id) ? " archiver-row--collapsed" : "")
+    + (extra || "");
+}
+function saveCollapsed() { if (Store.setCollapsed) Store.setCollapsed(collapsed).catch(() => {}); }
+function toggleCollapsed(id) {
+  if (collapsed[id]) delete collapsed[id]; else collapsed[id] = true;
+  saveCollapsed();
+  // Apply it now rather than waiting for the storage round-trip to come back.
+  const row = panelEl && panelEl.querySelector(`.archiver-row[data-id="${CSS.escape(id)}"]`);
+  if (row) updateRow(row);
+  updateHead(panelGroups());
+  syncScrollbar();   // the list just got shorter or taller
+}
+function setCollapseBtn(b, id) {
+  const on = isCollapsed(id);
+  b.textContent = on ? "▸" : "▾";
+  b.title = on ? "Expand this listing" : "Collapse this listing";
+  b.setAttribute("aria-expanded", on ? "false" : "true");
+}
 function snapOf(id) { return cats.starred[id] || cats.maybe[id] || cats.archived[id] || {}; }
 function mapElement() {
   return document.querySelector('[data-testid="map/GoogleMap"]')
@@ -104,7 +140,7 @@ function snapshotFromCard(anchor, container, id) {
 // pageData: { id: { coord, images, price } } read once out of the server-rendered
 // blob. Gives instant coords for colouring and photos/price for anything tagged
 // off this page load (the interceptor covers listings that arrive later by XHR).
-let pageData = null, deferredCoords = null;
+let pageData = null;
 function getPageData() {
   if (pageData) return pageData;
   pageData = {};
@@ -118,13 +154,6 @@ function getPageData() {
   } catch (_) {}
   return pageData;
 }
-function getDeferredCoords() {
-  if (deferredCoords) return deferredCoords;
-  deferredCoords = {};
-  const pd = getPageData();
-  for (const id in pd) if (pd[id].coord) deferredCoords[id] = pd[id].coord;
-  return deferredCoords;
-}
 // Photos + normalised price for a listing, best source first.
 function mediaOf(id) {
   const snap = snapOf(id), pd = getPageData()[id] || {};
@@ -136,12 +165,28 @@ function mediaOf(id) {
    A saved listing keeps its /rooms/<id> link, and its price is re-read from
    Airbnb whenever it's rendered. The room page itself carries no price (only a
    coordinate), so the probe re-runs Airbnb's own search scoped to a tiny box
-   around that coordinate — which does server-render a price. See
+   around that coordinate - which does server-render a price. See
    scripts/recon_pdp.py and scripts/recon_probe.py. */
 const PROBE_TTL_MS = 15 * 60 * 1000;
 const PROBE_MAX_INFLIGHT = 2;
 const PROBE_MAX_PER_RENDER = 8;
 const PROBE_GAP_MS = 400;
+// A probe that comes back with NOTHING usually means Airbnb said no - but it is
+// also exactly what a login wall, a rate-limit interstitial or a markup change
+// looks like, and all of those answer HTTP 200. Taking the first empty answer as
+// fact printed a confident "Unavailable" over the one number you're deciding on.
+// So look again, on a widening delay, and only believe it after it has said the
+// same thing three times across ten minutes.
+const PROBE_RETRY_MS = [30 * 1000, 2 * 60 * 1000, 10 * 60 * 1000];
+// Read at use time, not at load: twelve minutes of backoff is the behaviour
+// under test, and there is no other way for a test to reach the far end of it.
+function probeRetrySchedule() {
+  const o = typeof window !== "undefined" && window.__archiverProbeRetryMs;
+  return Array.isArray(o) && o.length ? o : PROBE_RETRY_MS;
+}
+// Prices also just go stale (PROBE_TTL_MS) on a tab left open. Sweeping on a
+// timer refreshes them without waiting for a render to happen to fire.
+const PROBE_SWEEP_MS = 60 * 1000;
 
 function currentCtx() { return typeof Filter !== "undefined" ? Filter.ctxOf(location.href) : ""; }
 function priceIsFresh(id) {
@@ -154,7 +199,13 @@ function linkFor(id) {
 }
 
 let probeQueue = [], probeInflight = 0;
-const probeAttempted = new Set();   // `${id}|${ctx}` — one shot per context per page load
+const probedAt = new Map();    // `${id}|${ctx}` -> when we last asked
+const probeFails = new Map();  // `${id}|${ctx}` -> consecutive useless answers
+function probeKey(id, ctx) { return id + "|" + ctx; }
+function askedRecently(key) {
+  const t = probedAt.get(key);
+  return !!t && Date.now() - t < PROBE_TTL_MS;
+}
 
 function schedulePriceProbes(ids) {
   if (typeof Filter === "undefined" || typeof fetch !== "function") return;
@@ -162,7 +213,7 @@ function schedulePriceProbes(ids) {
   let queued = 0;
   for (const id of ids) {
     if (queued >= PROBE_MAX_PER_RENDER) break;
-    if (priceIsFresh(id) || probeAttempted.has(id + "|" + ctx) || probeQueue.includes(id)) continue;
+    if (priceIsFresh(id) || askedRecently(probeKey(id, ctx)) || probeQueue.includes(id)) continue;
     probeQueue.push(id);
     queued++;
   }
@@ -172,46 +223,83 @@ function pumpProbes() {
   while (probeInflight < PROBE_MAX_INFLIGHT && probeQueue.length) {
     const id = probeQueue.shift();
     const ctx = currentCtx();
-    if (priceIsFresh(id) || probeAttempted.has(id + "|" + ctx)) continue;
-    probeAttempted.add(id + "|" + ctx);
+    const key = probeKey(id, ctx);
+    if (priceIsFresh(id) || askedRecently(key)) continue;
+    probedAt.set(key, Date.now());
     probeInflight++;
     probePrice(id, ctx)
-      .catch((e) => console.warn("[Archiver] price probe failed for", id, e))
-      .then(() => { probeInflight--; setTimeout(pumpProbes, PROBE_GAP_MS); });
+      .catch((e) => { console.warn("[Archiver] price probe failed for", id, e); return "error"; })
+      .then((outcome) => {
+        if (outcome === "ok") probeFails.delete(key);
+        else retryProbeLater(id, ctx, outcome);
+        probeInflight--;
+        setTimeout(pumpProbes, PROBE_GAP_MS);
+      });
   }
 }
+// Come back to it later instead of writing down an answer we don't trust.
+function retryProbeLater(id, ctx, outcome) {
+  const key = probeKey(id, ctx);
+  const schedule = probeRetrySchedule();
+  const tries = (probeFails.get(key) || 0) + 1;
+  probeFails.set(key, tries);
+  if (tries > schedule.length) {
+    // It has answered the same way every time now. An empty box really is
+    // "Airbnb isn't offering this"; a dead fetch stays unknown.
+    if (outcome === "empty") markUnavailable(id, { ctx, probedAt: Date.now() }).catch(() => {});
+    return;
+  }
+  setTimeout(() => {
+    if (currentCtx() !== ctx) return;   // dates changed; the normal path covers it
+    if (priceIsFresh(id)) return;
+    probedAt.delete(key);
+    if (!probeQueue.includes(id)) probeQueue.push(id);
+    pumpProbes();
+  }, schedule[tries - 1]);
+}
+// Keep the last known figure so the row still says something useful.
+function markUnavailable(id, stamp) {
+  const prev = prices[id] || {};
+  const last = prev.unavailable ? prev.lastMonthly : (prev.monthly != null ? prev.monthly : null);
+  return Store.setMediaBulk({
+    [id]: { price: { ...stamp, unavailable: true, monthly: null, symbol: prev.symbol || "", lastMonthly: last } },
+  });
+}
 
+// Returns "ok" (we learned something we believe), "empty" (the box came back
+// with no listings at all - suspicious, not proof) or "error" (never got there).
 async function probePrice(id, ctx) {
   let coord = coordFor(id);
   if (!coord) coord = await coordFromListingPage(id);   // bootstrap from the saved link
-  if (!coord) return;
+  if (!coord) return "error";
 
   const res = await fetch(Filter.probeUrl(location.origin, location.search, coord), { credentials: "same-origin" });
-  if (!res.ok) return;
+  if (!res.ok) return "error";
   const found = Filter.harvestHtml(await res.text());
+  const foundIds = Object.keys(found);
 
   const stamp = { ctx, probedAt: Date.now() };
   const tracked = new Set([...Object.keys(cats.starred), ...Object.keys(cats.maybe)]);
   const patch = {};
   // One probe returns every listing in the box, so refresh the neighbours too.
-  for (const fid of Object.keys(found)) {
+  for (const fid of foundIds) {
     if (!tracked.has(fid)) continue;
     const e = found[fid];
     patch[fid] = { images: e.images, coord: e.coord, price: e.price ? { ...e.price, ...stamp } : null };
-    if (e.price) probeAttempted.add(fid + "|" + ctx);
-  }
-  if (!found[id]) {
-    // Airbnb didn't return it for these dates — that's "not bookable", not a
-    // parse failure. Keep the last known figure so the row still says something.
-    const prev = prices[id] || {};
-    const last = prev.unavailable ? prev.lastMonthly : (prev.monthly != null ? prev.monthly : null);
-    patch[id] = { price: { ...stamp, unavailable: true, monthly: null, symbol: prev.symbol || "", lastMonthly: last } };
+    if (e.price) probedAt.set(probeKey(fid, ctx), Date.now());
   }
   if (Object.keys(patch).length) await Store.setMediaBulk(patch);
+
+  // Not one listing in a 150m box - in a city that is not what "unavailable"
+  // looks like, it is what being blocked looks like. Say nothing and retry.
+  if (!foundIds.length) return "empty";
+  // Neighbours came back and this one didn't: that is a real answer.
+  if (!found[id]) await markUnavailable(id, stamp);
+  return "ok";
 }
 
 // The room page has no price, but it does carry the coordinate a probe needs,
-// plus the host's name, the real listing name and the house rules (pets) — so
+// plus the host's name, the real listing name and the house rules (pets) - so
 // the saved link alone is enough to price and label a listing we've never seen
 // on a map. One fetch, cached: `listingPage` dedupes concurrent callers.
 const listingPageCache = {};
@@ -240,8 +328,8 @@ let hosts = {};
 let threads = {};
 function hostOf(id) { return hosts[id] || null; }
 // The existing conversation if we know it, otherwise Airbnb's compose window.
-// /contact_host/<id>/send_message does NOT resolve to an existing thread — it
-// opens a blank new-message form — so a known thread id always wins.
+// /contact_host/<id>/send_message does NOT resolve to an existing thread - it
+// opens a blank new-message form - so a known thread id always wins.
 function chatUrlFor(id) {
   const t = threads[id];
   return t ? Filter.threadUrl(location.origin, t) : Filter.contactUrl(location.origin, id);
@@ -253,7 +341,7 @@ function scheduleHostLookups(ids) {
   let n = 0;
   for (const id of ids) {
     if (n >= 4) break;                       // the room page is ~600KB; go easy
-    // A record with only the pets flag isn't a hit — the name is still missing.
+    // A record with only the pets flag isn't a hit - the name is still missing.
     const h = hostOf(id);
     if ((h && h.name) || hostAsked.has(id)) continue;
     hostAsked.add(id);
@@ -272,7 +360,7 @@ async function seedFromPageData() {
     const e = pd[id];
     if (!e) continue;
     patch[id] = { images: e.images, coord: e.coord, price: e.price ? { ...e.price, ...stamp } : null };
-    if (e.price) probeAttempted.add(id + "|" + ctx);
+    if (e.price) probedAt.set(probeKey(id, ctx), Date.now());
   }
   if (Object.keys(patch).length) await Store.setMediaBulk(patch);
 }
@@ -284,16 +372,92 @@ function seedMedia(id, snap) {
   const coord = pd.coord || parsePos(snap && snap.coord);
   if (Store.setMedia && (imgs || pd.price || coord)) Store.setMedia(id, imgs, pd.price, coord).catch(() => {});
 }
-function coordVals(catMap) {
-  const dc = getDeferredCoords();
-  const out = [];
-  for (const id of Object.keys(catMap)) {
-    const c = tagCoords[id] || parsePos(catMap[id] && catMap[id].coord) || dc[id];
-    if (c) out.push(c);
+/* --- which listing is this map pin? -------------------------------------
+   Airbnb reports plenty of listing coordinates rounded to FOUR decimals - which
+   was also the tolerance we matched pins by, so for those the match ran at
+   exactly the grid spacing of the data and could not tell neighbours apart.
+   Measured on one real captured search (scripts/test-marker-id.js): 26
+   listings, 7 pairs inside 1e-4, three of them at the *identical* coordinate. A
+   coordinate therefore does not identify a listing in a block of flats, which is
+   most of Airbnb in a city.
+
+   So resolve a marker by coordinate AND by the price written on its pill, and
+   say how sure the answer is. Hiding an archived pin is destructive and silent,
+   so it demands a confident match; colouring a starred pin is cosmetic and takes
+   the best guess. When two candidates genuinely can't be told apart we do
+   nothing - an archived pin lingering until the next fetch (where the
+   interceptor drops it by id) is a far better failure than a listing you never
+   archived quietly vanishing from the map. */
+const NEAR = 1e-4;
+function near(a, b) { return !!(a && b && Math.abs(a.lat - b.lat) < NEAR && Math.abs(a.lng - b.lng) < NEAR); }
+// Digits of the first money amount in a string: "$1,234 for 5 nights" -> "1234".
+function priceDigits(s) {
+  const m = String(s == null ? "" : s).match(/[$€£₲¥₩₪₫฿]\s?[\d.,]+/);
+  return m ? m[0].replace(/\D/g, "") : "";
+}
+// Every way this listing's price could plausibly be written on a pill: what it
+// said when you tagged it, plus each figure we've since normalised.
+function priceTokens(id) {
+  const out = new Set();
+  const add = (v) => { const d = String(v == null ? "" : v).replace(/\D/g, ""); if (d) out.add(d); };
+  add(priceDigits(snapOf(id).price));
+  const p = prices[id] || (getPageData()[id] || {}).price;
+  if (p) {
+    for (const v of [p.total, p.nightly, p.monthly]) {
+      if (typeof v !== "number" || !isFinite(v)) continue;
+      add(Math.round(v));
+      add(v.toFixed(2));
+    }
+    add(priceDigits(p.label));
   }
   return out;
 }
-function matchAny(pos, list) { return list.some((c) => Math.abs(c.lat - pos.lat) < 1e-4 && Math.abs(c.lng - pos.lng) < 1e-4); }
+// Rebuilt only when the tagged set or its prices change - this runs on every
+// decorate pass and does string work per listing.
+let taggedPointsCache = null;
+function taggedPoints() {
+  if (taggedPointsCache) return taggedPointsCache;
+  const out = [];
+  for (const cat of ["starred", "maybe", "archived"]) {
+    for (const id of Object.keys(cats[cat])) {
+      const coord = coordFor(id);
+      if (coord) out.push({ id, cat, coord, tokens: priceTokens(id) });
+    }
+  }
+  taggedPointsCache = out;
+  return out;
+}
+// marker element -> { id, cat, confident }
+function resolveMarkers() {
+  const out = new Map();
+  const tagged = taggedPoints();
+  if (!tagged.length) return out;
+  const markers = [...document.querySelectorAll("gmp-advanced-marker")];
+  const pts = markers.map((m) => parsePos(m.getAttribute("position")));
+  for (let i = 0; i < markers.length; i++) {
+    const p = pts[i];
+    if (!p) continue;
+    const cands = tagged.filter((t) => near(t.coord, p));
+    if (!cands.length) continue;
+    let siblings = 0;
+    for (const q of pts) if (near(q, p)) siblings++;
+    // One tagged listing here and one pin here: nothing to confuse it with.
+    if (cands.length === 1 && siblings === 1) { out.set(markers[i], { ...cands[0], confident: true }); continue; }
+    const mp = priceDigits(parseMarkerText(markers[i].textContent).price);
+    const byPrice = mp ? cands.filter((t) => t.tokens.has(mp)) : [];
+    out.set(markers[i], byPrice.length === 1
+      ? { ...byPrice[0], confident: true }
+      : { ...cands[0], confident: false });
+  }
+  return out;
+}
+let resolvedCache = null, resolvedAt = 0;
+function markerResolution(force) {
+  if (!force && resolvedCache && Date.now() - resolvedAt < 500) return resolvedCache;
+  resolvedCache = resolveMarkers();
+  resolvedAt = Date.now();
+  return resolvedCache;
+}
 // The largest rounded, non-transparent element in a marker (full pill body or dot).
 function colorableEl(m) {
   let best = null, bestArea = -1;
@@ -319,29 +483,43 @@ function clearPaint(m) {
   if (el) { el.style.removeProperty("background-color"); el.querySelectorAll("*").forEach((c) => c.style.removeProperty("color")); }
   delete m.dataset.archiverColor;
 }
-function colorMarkers() {
-  const starred = coordVals(cats.starred), maybe = coordVals(cats.maybe);
+// Colouring takes the best guess: a pin wearing the wrong colour is visible and
+// harmless, unlike a pin that silently isn't there.
+function colorMarkers(resolved) {
   for (const m of document.querySelectorAll("gmp-advanced-marker")) {
     if (m.style.display === "none") continue;
-    const pos = parsePos(m.getAttribute("position"));
-    let cls = null;
-    if (pos) { if (matchAny(pos, starred)) cls = "starred"; else if (matchAny(pos, maybe)) cls = "maybe"; }
+    const r = resolved.get(m);
+    const cls = r && (r.cat === "starred" || r.cat === "maybe") ? r.cat : null;
     if (cls) { if (m.dataset.archiverColor !== cls) paint(m, cls); }
     else if (m.dataset.archiverColor) clearPaint(m);
   }
 }
 
-/* ----------------------------- archived pins ----------------------------- */
-function hideArchivedMarkers() {
-  if (showArchived) return;
-  const coords = coordVals(cats.archived).map((c) => `${c.lat},${c.lng}`);
-  const set = new Set([...Object.values(cats.archived).map((s) => s.coord).filter(Boolean), ...coords]);
-  if (!set.size) return;
+/* ----------------------------- archived pins -----------------------------
+   Hide archived pins - and, the half that was missing, put them BACK when they
+   stop being archived or when "show archived" goes on. The old code only ever
+   set display:none, so unarchiving left the pin gone until Google Maps happened
+   to rebuild that marker, which made both the popup's Unarchive and the
+   show-archived toggle look broken.
+
+   `data-archiver-hidden` records WHICH listing a pin was hidden for, so putting
+   it back is exact and never has to re-resolve an ambiguous marker. */
+const pendingArchive = new Set();   // trashed, undo window still open
+function syncArchivedMarkers(resolved) {
   for (const m of document.querySelectorAll("gmp-advanced-marker")) {
-    const p = m.getAttribute("position"); if (!p) continue;
-    const pos = parsePos(p);
-    if (set.has(p) || (pos && coordVals(cats.archived).some((c) => Math.abs(c.lat - pos.lat) < 1e-4 && Math.abs(c.lng - pos.lng) < 1e-4))) {
+    const hiddenFor = m.dataset.archiverHidden;
+    if (hiddenFor) {
+      if (showArchived || (!cats.archived[hiddenFor] && !pendingArchive.has(hiddenFor))) {
+        m.style.removeProperty("display");
+        delete m.dataset.archiverHidden;
+      }
+      continue;
+    }
+    if (showArchived) continue;
+    const r = resolved.get(m);
+    if (r && r.confident && r.cat === "archived") {
       m.style.display = "none";
+      m.dataset.archiverHidden = r.id;
     }
   }
 }
@@ -382,16 +560,33 @@ function makeUnarchive(id) {
   b.addEventListener("click", async (e) => { e.preventDefault(); e.stopPropagation(); await Store.setCategory(id, null, null); });
   return b;
 }
+/* Every trash button goes through here: the thing vanishes now, you get the undo
+   window, and only then is it committed. The panel's rows used to archive on the
+   spot with no way back - the panel is the surface you actually click, so that
+   was the trash you were most likely to hit by mistake. One function, so the two
+   can't drift apart again. `pendingArchive` keeps the pin down for the duration
+   without the restore pass fighting it. */
+function archiveWithUndo(id, snap, hide, restore) {
+  pendingArchive.add(id);
+  hide();
+  toastUndo(`Archiving “${truncate((snap && snap.title) || ("Listing " + id), 30)}”`,
+    () => { pendingArchive.delete(id); restore(); },
+    () => { Store.setCategory(id, snap, "archived").catch(() => { pendingArchive.delete(id); restore(); }); });
+}
 function trashMapCard(id, snapshot, anchor) {
   const marker = lastMarker;
   const coord = marker ? marker.getAttribute("position") : snapshot.coord || null;
   const snap = { ...snapshot, title: (lastMarkerInfo && lastMarkerInfo.title) || snapshot.title, price: (lastMarkerInfo && lastMarkerInfo.price) || snapshot.price, coord };
   const cardRoot = popupCardRoot(anchor);
-  cardRoot.style.display = "none";
-  if (marker) marker.style.display = "none";
-  toastUndo(`Archiving “${truncate(snap.title || ("Listing " + id), 30)}”`,
-    () => { cardRoot.style.display = ""; if (marker) marker.style.display = ""; },
-    () => Store.setCategory(id, snap, "archived"));
+  archiveWithUndo(id, snap,
+    () => {
+      cardRoot.style.display = "none";
+      if (marker) { marker.style.display = "none"; marker.dataset.archiverHidden = id; }
+    },
+    () => {
+      cardRoot.style.display = "";
+      if (marker) { marker.style.removeProperty("display"); delete marker.dataset.archiverHidden; }
+    });
 }
 function cardContainer(anchor) {
   let el = anchor;
@@ -451,17 +646,92 @@ function ensurePanel() {
   const scope = document.createElement("button");
   scope.type = "button"; scope.className = "archiver-scope";
   scope.addEventListener("click", () => Store.setSetting("showAllPlaces", !showAllPlaces));
-  head.append(title, count, scope);
+  // Doing this row by row for a list of thirty would be a chore.
+  const collapseAll = document.createElement("button");
+  collapseAll.type = "button"; collapseAll.className = "archiver-collapse-all";
+  collapseAll.addEventListener("click", toggleCollapseAll);
+  head.append(title, count, collapseAll, scope);
   const list = document.createElement("div"); list.className = "archiver-panel-list";
+  list.addEventListener("scroll", syncScrollbar, { passive: true });
   panelEl.append(head, list);
   document.body.appendChild(panelEl);
+  ensureScrollbar();
   return panelEl;
+}
+
+/* --- the list's scrollbar ------------------------------------------------
+   The panel is pinned to the viewport and the list scrolls inside it, so there
+   has to be a visible bar saying how far down you are. The platform won't give
+   one: Firefox on Windows draws an overlay scrollbar that reserves no width and
+   fades out, and no CSS changes that (see content.css). So draw it: a track on
+   the panel's right edge with a draggable thumb, click-to-jump on the track. */
+let sbarEl = null, sbarThumb = null;
+function ensureScrollbar() {
+  if (!panelEl) return null;
+  if (sbarEl && panelEl.contains(sbarEl)) return sbarEl;
+  sbarEl = document.createElement("div"); sbarEl.className = "archiver-sbar"; sbarEl.hidden = true;
+  sbarThumb = document.createElement("div"); sbarThumb.className = "archiver-sbar-thumb";
+  sbarEl.appendChild(sbarThumb);
+
+  const listOf = () => panelEl && panelEl.querySelector(".archiver-panel-list");
+  // Click the track: jump to that position in the list.
+  sbarEl.addEventListener("pointerdown", (e) => {
+    const list = listOf();
+    if (!list || e.target === sbarThumb) return;
+    e.preventDefault(); e.stopPropagation();
+    const r = sbarEl.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (e.clientY - r.top) / Math.max(1, r.height)));
+    list.scrollTop = frac * (list.scrollHeight - list.clientHeight);
+    syncScrollbar();
+  });
+  // Drag the thumb. Listens on window, like the row drag, so a fast drag that
+  // leaves the 8px-wide track doesn't just stop.
+  sbarThumb.addEventListener("pointerdown", (e) => {
+    const list = listOf();
+    if (!list || e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const startY = e.clientY, startTop = list.scrollTop;
+    const track = sbarEl.getBoundingClientRect().height;
+    const thumbH = sbarThumb.getBoundingClientRect().height;
+    const range = list.scrollHeight - list.clientHeight;
+    const move = (ev) => {
+      const room = Math.max(1, track - thumbH);
+      list.scrollTop = startTop + (ev.clientY - startY) * (range / room);
+      syncScrollbar();
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+    };
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+  });
+
+  panelEl.appendChild(sbarEl);
+  return sbarEl;
+}
+function syncScrollbar() {
+  if (!panelEl || !ensureScrollbar()) return;
+  const list = panelEl.querySelector(".archiver-panel-list");
+  if (!list) return;
+  const range = list.scrollHeight - list.clientHeight;
+  if (range <= 2) { sbarEl.hidden = true; return; }
+  sbarEl.hidden = false;
+  const top = list.offsetTop + 4;
+  const h = Math.max(24, list.offsetHeight - 8);
+  sbarEl.style.top = top + "px";
+  sbarEl.style.height = h + "px";
+  const thumbH = Math.max(28, Math.round(h * (list.clientHeight / list.scrollHeight)));
+  sbarThumb.style.height = thumbH + "px";
+  sbarThumb.style.top = Math.round((list.scrollTop / range) * (h - thumbH)) + "px";
 }
 
 /* --- taking the card grid's place ---------------------------------------
    The panel used to be a fixed overlay at z-index 9000 laid over Airbnb's
    column. That always covered more than the cards: anything Airbnb draws in
-   that space — the search dropdown, menus — went under it. The fix is to stop
+   that space - the search dropdown, menus - went under it. The fix is to stop
    overlaying and start REPLACING: mount the panel where the card grid lives and
    hide the grid, so we inherit the column's width and its place in Airbnb's own
    stacking order. Their popovers then paint over us like they do over cards.
@@ -497,7 +767,7 @@ function findCardGrid() {
    18-per-page results, not ours. Left alone it reads as "5 pages" under a panel
    holding a single row, and clicking a page just reloads the same panel. Our
    list is one scroll over every saved listing on this map, so the pager has
-   nothing left to page — hide it with the grid, restore it with the grid.
+   nothing left to page - hide it with the grid, restore it with the grid.
    Matched structurally (a nav in the results column whose links are numbered
    search pages), not by its English aria-label. */
 let hiddenPager = null;
@@ -557,7 +827,7 @@ function mountPanel() {
   }
   return false;
 }
-// Bottom of Airbnb's top chrome — everything the panel must stay clear of.
+// Bottom of Airbnb's top chrome - everything the panel must stay clear of.
 // The header's own box is not enough. Expanding the search bar does NOT grow the
 // header (measured: 152px either way); the expanded bar is position:absolute
 // inside it and hangs ~16px past its bottom edge, and it is wider than the map
@@ -589,7 +859,7 @@ function chromeBottom() {
 
 // Top of Airbnb's own card column. Airbnb already lays this out below whatever
 // chrome is showing, so following it keeps the panel the size of the cards it
-// replaces — which is the whole point: cover them, hide nothing else.
+// replaces - which is the whole point: cover them, hide nothing else.
 // `colRight` is the map's left edge: only count cards actually in the results
 // column. Some itemListElement nodes measure far to the right of the map (they
 // sit in a horizontally overflowing container), and letting those vote drags the
@@ -616,19 +886,27 @@ function positionPanel() {
   if (mountPanel()) {
     hidePager();
     panelEl.classList.remove("archiver-panel-overlay");
-    for (const p of ["top", "left", "width", "height"]) panelEl.style.removeProperty(p);
+    for (const p of ["left", "width", "height"]) panelEl.style.removeProperty(p);
+    // Pin it to the viewport and let the LIST scroll (see content.css). Sticky
+    // needs a top, and that top has to clear whatever chrome Airbnb is showing,
+    // which is the same measurement the overlay fallback makes.
+    const top = Math.max(0, Math.round(chromeBottom()));
+    panelEl.style.top = top + "px";
+    panelEl.style.maxHeight = Math.max(200, Math.round(window.innerHeight - top)) + "px";
     panelEl.style.display = "flex";
+    syncScrollbar();
     return true;
   }
   // Fallback: no card grid to replace (Airbnb markup changed, or the column
-  // hasn't rendered yet) — lay the old overlay over the column instead.
+  // hasn't rendered yet) - lay the old overlay over the column instead.
   panelEl = ensurePanel();
   if (panelEl.parentElement !== document.body) document.body.appendChild(panelEl);
   if (hiddenGrid) { hiddenGrid.style.removeProperty("display"); hiddenGrid = null; }
   restorePager();   // their pager comes back with their grid
   panelEl.classList.add("archiver-panel-overlay");
+  panelEl.style.removeProperty("max-height");   // the overlay sizes itself exactly
   // Cover the results column and nothing above it. This used to sit at
-  // `max(56, map.top - 96)` — a guess that landed 56px over a 152px-tall header
+  // `max(56, map.top - 96)` - a guess that landed 56px over a 152px-tall header
   // and covered the left half of the search bar. Take the cards' own top, and
   // never rise above the live chrome (they scroll under a sticky header).
   const ct = cardsTop(r.left);
@@ -640,13 +918,14 @@ function positionPanel() {
   // Airbnb's own two-column cards showing underneath the panel.
   const bottom = window.innerHeight;
   ensurePanel();
-  // Must stay "flex" — an inline display:block here beats the stylesheet, the
+  // Must stay "flex" - an inline display:block here beats the stylesheet, the
   // list stops being a flex item, and it grows past the panel instead of scrolling.
   panelEl.style.display = "flex";
   panelEl.style.top = top + "px";
   panelEl.style.left = "0px";
   panelEl.style.width = Math.round(r.left) + "px";
   panelEl.style.height = Math.max(120, Math.round(bottom - top)) + "px";
+  syncScrollbar();
   return true;
 }
 function orderedIds() {
@@ -693,7 +972,7 @@ function inBounds(c, b) {
   return !!(c && b && c.lat >= b.minLat && c.lat <= b.maxLat && c.lng >= b.minLng && c.lng <= b.maxLng);
 }
 // Split the list into what's on the map now, what isn't, and what we have no
-// coordinate for. Unplaced listings are always shown — hiding a listing we
+// coordinate for. Unplaced listings are always shown - hiding a listing we
 // simply never learned the location of would look like we lost it.
 function panelGroups() {
   const ids = orderedIds();
@@ -767,7 +1046,7 @@ function attachDrag(handle, row) {
 }
 
 // The panel usually shows a subset (only what's on the map), so a drop must not
-// overwrite the global order with just those ids — that would throw away the
+// overwrite the global order with just those ids - that would throw away the
 // ordering of everything off-screen. Splice the new sequence back into the slots
 // the visible rows already occupied, leaving hidden listings where they are.
 function commitOrder(visibleNow) {
@@ -793,18 +1072,22 @@ function highlightMarker(id, on) {
     hoverMarker = null;
   }
   if (!on) return;
-  const c = coordFor(id);
-  if (!c) return;
-  for (const m of document.querySelectorAll("gmp-advanced-marker")) {
-    if (m.style.display === "none") continue;
-    const p = parsePos(m.getAttribute("position"));
-    if (!p || Math.abs(p.lat - c.lat) > 1e-4 || Math.abs(p.lng - c.lng) > 1e-4) continue;
-    m.style.zIndex = "9999";
-    const el = colorableEl(m);
-    if (el) el.classList.add("archiver-pill-hover");
-    hoverMarker = m;
-    return;
+  // Same resolver the colouring uses: prefer a pin we're sure of, settle for the
+  // best guess so hovering a row in a shared building still points somewhere.
+  // Resolved fresh, never from the memo: Google rebuilds markers as you pan, and
+  // a cached answer can point at elements that have since left the document, so
+  // the class would land on nothing and the hover would look dead.
+  let best = null;
+  for (const [m, r] of markerResolution(true)) {
+    if (r.id !== id || m.style.display === "none" || !document.contains(m)) continue;
+    best = m;
+    if (r.confident) break;
   }
+  if (!best) return;
+  best.style.zIndex = "9999";
+  const el = colorableEl(best);
+  if (el) el.classList.add("archiver-pill-hover");
+  hoverMarker = best;
 }
 
 /* --- price, normalised to 30 nights --- */
@@ -833,12 +1116,12 @@ function priceText(id) {
     };
   }
   const raw = snapOf(id).price || "";
-  return { head: raw || "—", unit: "", perDay: "", sub: raw ? "" : "checking price…", stale: true };
+  return { head: raw || "-", unit: "", perDay: "", sub: raw ? "" : "checking price…", stale: true };
 }
 
 // Which photo each listing is showing. A re-render (a price landing, a note
 // saving) rebuilds the rows, and without this every carousel snapped back to
-// photo 1 — which looked like the carousel jumping backwards on its own.
+// photo 1 - which looked like the carousel jumping backwards on its own.
 const carouselAt = {};
 
 function buildCarousel(urls, id) {
@@ -874,7 +1157,7 @@ function buildCarousel(urls, id) {
 function panelRow(id) {
   const snap = snapOf(id), cat = catOf(id);
   const row = document.createElement("div");
-  row.className = "archiver-row archiver-row--" + cat;
+  row.className = rowClass(id, cat);
   row.dataset.id = id;
   row.addEventListener("mouseenter", () => highlightMarker(id, true));
   row.addEventListener("mouseleave", () => highlightMarker(id, false));
@@ -905,13 +1188,27 @@ function panelRow(id) {
     b.addEventListener("pointerdown", (e) => e.stopPropagation());
     b.addEventListener("click", async (e) => {
       e.preventDefault(); e.stopPropagation();
-      if (target === "archived") { await Store.setCategory(id, snap, "archived"); return; }
+      if (target === "archived") {
+        archiveWithUndo(id, snapOf(id),
+          () => { row.style.display = "none"; },
+          () => { row.style.removeProperty("display"); });
+        return;
+      }
       const cur = catOf(id);
       await Store.setCategory(id, snap, cur === target ? null : target);
     });
     return b;
   };
   ctrls.append(mk("★", cat === "starred", "starred", "Star"), mk("?", cat === "maybe", "maybe", "Maybe"), mk("🗑", false, "archived", "Archive"));
+  // Last, so the .archiver-rowbtn.on:nth-child(1|2) colour rules still mean
+  // star and maybe.
+  const collapseBtn = document.createElement("button");
+  collapseBtn.type = "button";
+  collapseBtn.className = "archiver-rowbtn archiver-collapse";
+  collapseBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
+  collapseBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); toggleCollapsed(id); });
+  setCollapseBtn(collapseBtn, id);
+  ctrls.appendChild(collapseBtn);
   head.append(a, ctrls);
 
   const perDay = document.createElement("div");
@@ -943,18 +1240,18 @@ function panelRow(id) {
    The bottom of every row is one slot with two tabs over it: your note (the
    default, and what used to be the whole slot) and the actual conversation with
    the host, embedded live. The point is reading and answering chats without
-   leaving the map — the 💬 button in the host row above still opens the full
+   leaving the map - the 💬 button in the host row above still opens the full
    thread in its own tab.
 
    Verified with scripts/recon_chat_iframe.py: framing a real
    /guest/messages/<threadId> from a page on www.airbnb.com works
    (x-frame-options is SAMEORIGIN, and we are that origin), and at panel width
-   Airbnb's own responsive layout collapses its inbox sidebar and nav to zero —
+   Airbnb's own responsive layout collapses its inbox sidebar and nav to zero -
    so the frame shows the conversation alone, scroller and composer included.
    Nothing has to be cropped. ------------------------------------------ */
 
 // Which tab each row is on, kept per listing like carouselAt: a re-render must
-// not flip you back to the note. Rows are independent — several chats can be
+// not flip you back to the note. Rows are independent - several chats can be
 // open at once.
 const tabAt = {};
 
@@ -1005,8 +1302,8 @@ function applyTab(box, id) {
   }
 }
 
-// The conversation loads only when its tab is actually opened — booting Airbnb's
-// message app once per row for a panel of forty would be ruinous — and then
+// The conversation loads only when its tab is actually opened - booting Airbnb's
+// message app once per row for a panel of forty would be ruinous - and then
 // stays loaded. Re-running this is free unless the pane's state genuinely
 // changed, which is what upgrades "no conversation yet" into the real thread the
 // moment one is learned.
@@ -1049,7 +1346,7 @@ function renderPanel() {
   const sig = groupSig(g);
 
   // Same listings in the same order? Then a price landing (or a category swap)
-  // must NOT rebuild the DOM — that resets every carousel and steals focus from
+  // must NOT rebuild the DOM - that resets every carousel and steals focus from
   // a note you're typing in. Patch the rows that changed instead.
   if (sig === lastSig && list.querySelector(".archiver-row")) {
     updateHead(g);
@@ -1067,7 +1364,7 @@ function renderPanel() {
 
   const items = [];
   if (!g.total) {
-    items.push(emptyItem("Nothing here yet — star or “maybe” listings from the map."));
+    items.push(emptyItem("Nothing here yet - star or “maybe” listings from the map."));
   } else {
     for (const id of g.shown) items.push(rowItem(id));
     if (g.unplaced.length) {
@@ -1082,6 +1379,7 @@ function renderPanel() {
   }
   syncList(list, items);
   list.scrollTop = scroll; // a re-render shouldn't jump you back to the top
+  syncScrollbar();
   if (!g.total) return;
   // Rows that were kept are still showing the old price/host, so refresh them.
   for (const row of list.querySelectorAll(".archiver-row")) updateRow(row);
@@ -1098,13 +1396,13 @@ function divider(text) {
 
 /* --- rebuilding the list without throwing away what's still in it ------
    The panel used to empty the list and re-create every row whenever the set of
-   listings changed — which is every map pan. That is now unaffordable: a row's
+   listings changed - which is every map pan. That is now unaffordable: a row's
    Chat tab holds a live iframe, and removing (or even moving) an iframe ends its
    browsing context, so the conversation you were reading would reload from the
    top. So match the wanted list against what's on screen by key and touch only
    the difference. Rows that keep their relative order are never moved, so
-   panning a couple of listings out of view leaves an open chat — and a carousel,
-   and a note caret — completely undisturbed. -------------------------- */
+   panning a couple of listings out of view leaves an open chat - and a carousel,
+   and a note caret - completely undisturbed. -------------------------- */
 function rowItem(id) { return { key: "r:" + id, build: () => panelRow(id) }; }
 function dividerItem(text) { return { key: "d:" + text, build: () => divider(text) }; }
 function emptyItem(text) {
@@ -1142,7 +1440,7 @@ function setChatLink(a, id) {
   a.classList.toggle("archiver-host-chat--new", !known);
   a.title = known
     ? "Open your existing conversation about this listing"
-    : "No conversation recorded yet — this opens Airbnb's new-message form. Open the chat once and this will link straight to it.";
+    : "No conversation recorded yet - this opens Airbnb's new-message form. Open the chat once and this will link straight to it.";
 }
 // The host name arrives asynchronously (one room-page fetch per listing), so the
 // row renders immediately and fills in when it lands.
@@ -1159,9 +1457,32 @@ function fillHost(hostRow, id) {
     nameEl.classList.add("archiver-host-name--pending");
   }
 }
+// Collapse everything on screen, or open it all back up. Only touches the rows
+// the panel is actually showing, so it can't quietly re-tidy another city.
+function toggleCollapseAll() {
+  let g;
+  try { g = panelGroups(); } catch (e) { return; }
+  const ids = [...g.shown, ...g.unplaced];
+  if (!ids.length) return;
+  const anyOpen = ids.some((id) => !collapsed[id]);
+  for (const id of ids) { if (anyOpen) collapsed[id] = true; else delete collapsed[id]; }
+  saveCollapsed();
+  if (panelEl) for (const row of panelEl.querySelectorAll(".archiver-row")) updateRow(row);
+  updateHead(g);
+  syncScrollbar();
+}
 function updateHead(g) {
   const count = panelEl && panelEl.querySelector(".archiver-panel-count");
   const scope = panelEl && panelEl.querySelector(".archiver-scope");
+  const collapseAll = panelEl && panelEl.querySelector(".archiver-collapse-all");
+  if (collapseAll) {
+    const ids = [...g.shown, ...g.unplaced];
+    const anyOpen = ids.some((id) => !collapsed[id]);
+    collapseAll.textContent = anyOpen ? "Collapse" : "Expand";
+    collapseAll.title = anyOpen ? "Shrink every listing shown to a strip" : "Show every listing shown in full";
+    collapseAll.disabled = !ids.length;
+    collapseAll.classList.toggle("on", !anyOpen && ids.length > 0);
+  }
   if (count) count.textContent = g.filtered ? `${g.shown.length} of ${g.total} on this map` : `${g.total} listing${g.total === 1 ? "" : "s"}`;
   if (scope) {
     scope.textContent = showAllPlaces ? "On this map" : "Show all";
@@ -1177,7 +1498,9 @@ function updateRow(row) {
   const id = row.dataset.id;
   if (!id) return;
   const cat = catOf(id);
-  row.className = "archiver-row archiver-row--" + cat + (row.classList.contains("dragging") ? " dragging" : "");
+  row.className = rowClass(id, cat, row.classList.contains("dragging") ? " dragging" : "");
+  const collapseBtn = row.querySelector(".archiver-collapse");
+  if (collapseBtn) setCollapseBtn(collapseBtn, id);
 
   const p = priceText(id);
   const a = row.querySelector(".archiver-row-price");
@@ -1225,7 +1548,7 @@ function updateRow(row) {
    Both read the host/listing name from the room page (Store.getHosts cache). */
 /* Where the bar belongs on a MESSAGE THREAD page: in the flow at the top of the
    conversation column, above the host's name. Floating it (fixed, bottom) put it
-   straight over Airbnb's compose box — you couldn't see what you were typing.
+   straight over Airbnb's compose box - you couldn't see what you were typing.
    Verified layout (scripts/recon_thread_layout.py, logged in): the thread column
    is `section[data-testid="orbital-panel-thread"]`, and inside it a flex column
    holds the header (host name) above the message pane + composer. Insert before
@@ -1244,7 +1567,7 @@ function threadDock() {
     const p = node.parentElement;
     const st = getComputedStyle(p);
     let first = p.firstElementChild;
-    // Our own bar, once docked, must not be mistaken for the header — that
+    // Our own bar, once docked, must not be mistaken for the header - that
     // would make every pass re-insert it and churn the page forever.
     if (first && first.classList.contains("archiver-bridge")) first = first.nextElementSibling;
     if (st.display.indexOf("flex") !== -1 && st.flexDirection === "column" && first && first !== node) {
@@ -1254,12 +1577,12 @@ function threadDock() {
   }
   return null;
 }
-/* The blank strip ABOVE the conversation — Airbnb's own header band, which is
+/* The blank strip ABOVE the conversation - Airbnb's own header band, which is
    empty across the middle. Sitting there costs the chat nothing (the bar is
    fixed, out of the flow) and still reads as "above the host's name".
    Measured live at 900–1500px wide (scripts/recon_thread_topband.py): the band
    is 81–97px tall, with only the logo on the left and the nav on the right, so
-   the free middle is 400–500px+. Returns the slot, or null when it won't fit —
+   the free middle is 400–500px+. Returns the slot, or null when it won't fit -
    then we fall back to docking in the flow. */
 function topBandSlot(header) {
   const hr = header.getBoundingClientRect();
@@ -1278,7 +1601,7 @@ function topBandSlot(header) {
   return { left, width: right - left, bottom: bandBottom };
 }
 // Only ever write a style that actually changed: an attribute set to the same
-// value still fires the MutationObserver, and this runs from it — writing
+// value still fires the MutationObserver, and this runs from it - writing
 // unconditionally would keep the page re-laying-out forever.
 function setStyle(el, prop, val) { if (el.style[prop] !== val) el.style[prop] = val; }
 function clearBridgePlacement(bar) {
@@ -1306,7 +1629,7 @@ function mountBridge(bar) {
     return;
   }
   if (dock) {
-    // Nothing fits up there — dock in the flow above the header. Still better
+    // Nothing fits up there - dock in the flow above the header. Still better
     // than floating over the composer.
     if (bar.classList.contains("archiver-bridge--top")) clearBridgePlacement(bar);
     bar.classList.add("archiver-bridge--docked");
@@ -1323,7 +1646,7 @@ function repositionBridge() {
   const bar = document.querySelector(".archiver-bridge");
   if (bar) mountBridge(bar);
 }
-// How tall the note is allowed to get — which depends on which way it grows.
+// How tall the note is allowed to get - which depends on which way it grows.
 // The top-band bar is pinned by its top, so the box extends DOWN and the limit
 // is the bottom of the window. The floating bar is anchored to `bottom`, so it
 // extends UP and the limit is how much is above it: measuring downward there
@@ -1349,7 +1672,7 @@ function growNote(note) {
 }
 // Self-heal: whatever event we failed to hook (paste variants, IME, a re-render
 // that swapped the field), a focused note that doesn't fit gets re-grown on the
-// next decorate pass. Costs nothing when it already fits — and writes nothing,
+// next decorate pass. Costs nothing when it already fits - and writes nothing,
 // so it can't churn the MutationObserver that calls it.
 function growNoteIfClipped(note) {
   if (!note || document.activeElement !== note) return;
@@ -1396,7 +1719,7 @@ function fillBridge(id, mode) {
   const noteEl = bar.querySelector(".archiver-bridge-note");
   if (noteEl) {
     growNoteIfClipped(noteEl);   // last resort, on every decorate pass
-    // Set the value when the listing changes, or to reflect an external edit —
+    // Set the value when the listing changes, or to reflect an external edit -
     // but never yank text out from under active typing here.
     if (bridgeNoteId !== id) { bridgeNoteId = id; noteEl.value = notes[id] || ""; }
     else if (document.activeElement !== noteEl) { noteEl.value = notes[id] || ""; }
@@ -1414,6 +1737,36 @@ function fillBridge(id, mode) {
 }
 let bridgeId = null;
 let bridgeNoteId = null;
+/* Which listing an open conversation is about. This used to serialise
+   `document.body.innerHTML` and regex the result on EVERY decorate pass - a
+   multi-megabyte string rebuilt over and over, on the one page (a live chat)
+   that never stops mutating. The thread's own /rooms links carry the same
+   answer, read straight off the DOM, and the answer can't change while you stay
+   on that thread - so read it from links and remember it.
+   Same rule as Filter.listingIdFromThread: the inbox sidebar links every OTHER
+   conversation's listing too, so the one that recurs is the open one. */
+const threadListing = new Map();   // pathname -> listing id
+const threadScans = new Map();     // pathname -> full-text fallbacks spent
+function listingForThread() {
+  const path = location.pathname;
+  if (threadListing.has(path)) return threadListing.get(path);
+  const counts = new Map();
+  for (const a of document.querySelectorAll('a[href*="/rooms/"]')) {
+    const m = (a.getAttribute("href") || "").match(/\/rooms\/(\d+)/);
+    if (m) counts.set(m[1], (counts.get(m[1]) || 0) + 1);
+  }
+  let best = null, bestN = 0;
+  for (const [id, n] of counts) if (n > bestN) { best = id; bestN = n; }
+  // No links yet (the thread is still booting), or the id only lives in the
+  // page's JSON: fall back to the full-text scan a few times, then stop asking.
+  if (!best) {
+    const tries = (threadScans.get(path) || 0) + 1;
+    threadScans.set(path, tries);
+    if (tries <= 3) best = Filter.listingIdFromThread(document.body ? document.body.innerHTML : "");
+  }
+  if (best) threadListing.set(path, best);
+  return best;
+}
 function decorateBridge() {
   if (typeof Filter === "undefined") return;
   const roomId = Filter.roomIdFromPath(location.pathname);
@@ -1424,9 +1777,9 @@ function decorateBridge() {
     bridgeId = null;
     return;
   }
-  // On a thread page the listing isn't in the URL — it's whatever room the
+  // On a thread page the listing isn't in the URL - it's whatever room the
   // conversation links to.
-  const id = roomId || Filter.listingIdFromThread(document.body ? document.body.innerHTML : "");
+  const id = roomId || listingForThread();
   if (!id) return;
   const mode = roomId ? "room" : "thread";
   // Being on a thread page is the one moment we learn which conversation belongs
@@ -1451,6 +1804,14 @@ let lastSig = null;
 function groupSig(g) {
   return g.shown.join(",") + "|" + g.unplaced.join(",") + "|" + g.hidden + "|" + (showAllPlaces ? 1 : 0);
 }
+// Re-price whatever the panel is showing, on a timer rather than only when a
+// render happens to fire. Anything still fresh is skipped inside.
+function sweepProbes() {
+  if (!panelEl || !document.body.contains(panelEl) || panelEl.style.display === "none") return;
+  let g;
+  try { g = panelGroups(); } catch (e) { return; }
+  try { schedulePriceProbes([...g.shown, ...g.unplaced]); } catch (e) { console.warn("[Archiver] probe sweep", e); }
+}
 function syncPanelToMap() {
   if (dragRow) return;
   let g;
@@ -1460,8 +1821,11 @@ function syncPanelToMap() {
 
 function decorateAll() {
   try { decorateMapCards(); } catch (e) { console.warn("[Archiver] decorateMapCards", e); }
-  try { hideArchivedMarkers(); } catch (e) { console.warn("[Archiver] hideArchivedMarkers", e); }
-  try { colorMarkers(); } catch (e) { console.warn("[Archiver] colorMarkers", e); }
+  // Resolve pins to listings once, then let both passes read the same answer.
+  let resolved = new Map();
+  try { resolved = markerResolution(true); } catch (e) { console.warn("[Archiver] resolveMarkers", e); }
+  try { syncArchivedMarkers(resolved); } catch (e) { console.warn("[Archiver] syncArchivedMarkers", e); }
+  try { colorMarkers(resolved); } catch (e) { console.warn("[Archiver] colorMarkers", e); }
   try { positionPanel(); } catch (e) { console.warn("[Archiver] positionPanel", e); }
   try { syncPanelToMap(); } catch (e) { console.warn("[Archiver] syncPanelToMap", e); }
   try { decorateBridge(); } catch (e) { console.warn("[Archiver] decorateBridge", e); }
@@ -1469,7 +1833,7 @@ function decorateAll() {
 const observer = new MutationObserver(debounce(decorateAll, 250));
 window.addEventListener("resize", debounce(() => { positionPanel(); repositionBridge(); }, 200));
 // The top edge now follows the cards, which move under the sticky header as you
-// scroll — so re-place it on scroll too, or a strip of Airbnb's own cards shows
+// scroll - so re-place it on scroll too, or a strip of Airbnb's own cards shows
 // through above the panel.
 window.addEventListener("scroll", debounce(positionPanel, 100), { passive: true });
 window.addEventListener("popstate", () => setTimeout(syncPanelToMap, 50));
@@ -1477,7 +1841,7 @@ window.addEventListener("popstate", () => setTimeout(syncPanelToMap, 50));
 async function start() {
   await loadState();
   observer.observe(document.body, { childList: true, subtree: true });
-  // Listings rendered on this very page are priced for free — probe only the rest.
+  // Listings rendered on this very page are priced for free - probe only the rest.
   try { await seedFromPageData(); } catch (e) { console.warn("[Archiver] seedFromPageData", e); }
   decorateAll();
   renderPanel();
@@ -1486,6 +1850,9 @@ async function start() {
   // mutation to observe (the search bar expanding, a late font, the map getting
   // its size), and without this a panel hidden at first render never recovers.
   setInterval(() => { syncPanelToMap(); try { positionPanel(); } catch (e) {} }, 700);
+  // Prices expire and probes get blocked; both are fixed by asking again a bit
+  // later, so don't make it wait for the next render.
+  setInterval(sweepProbes, PROBE_SWEEP_MS);
   console.log("[Archiver] active");
 }
 start();

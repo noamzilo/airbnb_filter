@@ -1,5 +1,18 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/no_em_dash_hook.js\"",
+            "timeout": 10,
+            "statusMessage": "Checking for em dashes"
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [

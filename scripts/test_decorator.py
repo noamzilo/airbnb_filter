@@ -202,20 +202,101 @@ try:
     scroll = d.execute_script("""
       const p=document.querySelector('.archiver-panel');
       const l=document.querySelector('.archiver-panel-list');
+      const map=document.querySelector('[data-testid="map/GoogleMap"]');
       const over=l.scrollHeight-l.clientHeight;
+      const mapBefore=map?Math.round(map.getBoundingClientRect().top):null;
       l.scrollTop=400; const moved=l.scrollTop;
+      const mapAfter=map?Math.round(map.getBoundingClientRect().top):null;
+      l.scrollTop=0;
       return {over, moved, clientH:l.clientHeight, rows:document.querySelectorAll('.archiver-row').length,
               inFlow: !p.classList.contains('archiver-panel-overlay'),
-              pageScrolls: document.documentElement.scrollHeight > window.innerHeight + 200};
+              position: getComputedStyle(p).position,
+              panelH: Math.round(p.getBoundingClientRect().height),
+              mapBefore, mapAfter, vh: window.innerHeight};
     """)
     if scroll["inFlow"]:
-        # Mounted in Airbnb's column, the column scrolls -- the list must NOT be
-        # its own scroll container, and nothing may be clipped. (The old overlay
-        # clipped content when the list wasn't allowed to scroll; in flow the
-        # equivalent failure is content cut off with no way to reach it.)
-        check("in flow: list is not its own scrollbox", scroll["over"] <= 1, str(scroll))
+        # The panel used to grow to the full height of the list and let the PAGE
+        # scroll, exactly as Airbnb's cards did. With a long saved list that meant
+        # scrolling the map off screen to reach the bottom of your own list. It is
+        # now pinned to the viewport and the LIST scrolls inside it.
+        check("in flow: panel is pinned to the viewport", scroll["position"] == "sticky"
+              and scroll["panelH"] <= scroll["vh"] + 1, str(scroll))
+        check("in flow: the list is its own scrollbox", scroll["over"] > 100 and scroll["moved"] == 400, str(scroll))
         check("in flow: every row is laid out", scroll["rows"] == 25, str(scroll))
-        check("in flow: the page scrolls instead", scroll["pageScrolls"], str(scroll))
+        check("in flow: scrolling the list leaves the map alone",
+              scroll["mapBefore"] == scroll["mapAfter"], str(scroll))
+
+        # Firefox on Windows draws an overlay scrollbar that reserves no width and
+        # fades out, and no CSS changes that, so the panel draws its own.
+        bar = d.execute_script("""
+          const p=document.querySelector('.archiver-panel');
+          const b=p.querySelector('.archiver-sbar'), t=p.querySelector('.archiver-sbar-thumb');
+          const l=p.querySelector('.archiver-panel-list');
+          if(!b||!t) return {found:false};
+          const br=b.getBoundingClientRect(), pr=p.getBoundingClientRect();
+          const top0=t.getBoundingClientRect().top-br.top;
+          l.scrollTop=l.scrollHeight; l.dispatchEvent(new Event('scroll'));
+          const th=t.getBoundingClientRect().height;
+          const top1=t.getBoundingClientRect().top-br.top;
+          b.dispatchEvent(new PointerEvent('pointerdown',{clientY:br.top+br.height*0.5,bubbles:true}));
+          const jumped=Math.round(l.scrollTop), halfway=Math.round((l.scrollHeight-l.clientHeight)*0.5);
+          l.scrollTop=0; l.dispatchEvent(new Event('scroll'));
+          return {found:true, hidden:b.hidden, w:Math.round(br.width),
+                  inside: br.right<=pr.right+1, thumbAtTop:Math.round(top0),
+                  thumbAtBottom:Math.round(top1), endsAtBottom:Math.abs((top1+th)-br.height)<3,
+                  jumped, halfway, backToTop:Math.round(t.getBoundingClientRect().top-br.top)};
+        """)
+        check("the list has a visible scrollbar", bar["found"] and not bar["hidden"]
+              and bar["w"] >= 6 and bar["inside"], str(bar))
+        check("its thumb tracks the scroll position", bar["thumbAtTop"] == 0
+              and bar["endsAtBottom"] and bar["backToTop"] == 0, str(bar))
+        check("clicking the track jumps there", abs(bar["jumped"] - bar["halfway"]) <= 2, str(bar))
+
+        # --- collapsing a row ------------------------------------------------
+        col = d.execute_script("""
+          const rows=[...document.querySelectorAll('.archiver-row')];
+          const r=rows[0], id=r.dataset.id;
+          const h0=Math.round(r.getBoundingClientRect().height);
+          const btn=r.querySelector('.archiver-collapse');
+          if(!btn) return {found:false};
+          btn.click();
+          const h1=Math.round(r.getBoundingClientRect().height);
+          const after=[...document.querySelectorAll('.archiver-row')].map(x=>x.dataset.id);
+          const handle=r.querySelector('.archiver-handle');
+          return {found:true, before:h0, after:h1, id, firstStill:after[0]===id,
+                  order:after.slice(0,4),
+                  collapsedClass:r.classList.contains('archiver-row--collapsed'),
+                  handleUsable: !!handle && handle.getBoundingClientRect().width>0,
+                  photoKept: r.querySelector('.archiver-media').getBoundingClientRect().height>0,
+                  tabsHidden: r.querySelector('.archiver-tabbed').getBoundingClientRect().height===0,
+                  persisted: Object.keys(window.__collapsed||{})};
+        """)
+        check("a row can be collapsed", col["found"] and col["collapsedClass"]
+              and col["after"] < col["before"] / 2, str(col))
+        check("collapsing keeps the row where it was", col["firstStill"], str(col))
+        check("a collapsed row can still be dragged", col["handleUsable"], str(col))
+        check("it keeps its photo and loses the tall parts",
+              col["photoKept"] and col["tabsHidden"], str(col))
+        check("the collapsed state is saved", col["persisted"] == [col["id"]], str(col))
+        colAll = d.execute_script("""
+          const b=document.querySelector('.archiver-collapse-all');
+          const l=document.querySelector('.archiver-panel-list');
+          if(!b) return {found:false};
+          const h0=l.scrollHeight, label0=b.textContent;
+          b.click();
+          const n=document.querySelectorAll('.archiver-row--collapsed').length;
+          const h1=l.scrollHeight, label1=b.textContent;
+          b.click();
+          return {found:true, h0, h1, label0, label1, collapsed:n,
+                  total:document.querySelectorAll('.archiver-row').length,
+                  expandedAgain:document.querySelectorAll('.archiver-row--collapsed').length};
+        """)
+        check("one button collapses the whole list", colAll["found"]
+              and colAll["collapsed"] == colAll["total"] and colAll["h1"] < colAll["h0"] / 3, str(colAll))
+        check("and expands it again", colAll["expandedAgain"] == 0
+              and colAll["label0"] == "Collapse" and colAll["label1"] == "Expand", str(colAll))
+        d.execute_script("window.__collapsed={}; window.__ls.forEach(f=>f({collapsed:{}}));")
+        time.sleep(0.5)
         # Airbnb's "1 2 3 4 5" pager pages through THEIR results, not ours -- with
         # the grid replaced it offers pages of nothing. It must go with the grid.
         pager = d.execute_script("""
@@ -363,10 +444,33 @@ try:
     """); time.sleep(0.7)
     check("comment saved to notes", "great view" in d.execute_script("return Object.values(window.__notes).join('|')"))
 
-    # Re-rate from the panel: trash a row -> leaves the panel
-    d.execute_script("const b=[...document.querySelectorAll('.archiver-row .archiver-rowbtn')].find(x=>x.textContent==='🗑'); b&&b.click();")
-    time.sleep(0.5)
-    check("trash from panel removes the row", d.execute_script("return document.querySelectorAll('.archiver-row').length")==1)
+    # Re-rate from the panel: trash a row -> it goes, with a way back.
+    # The panel used to archive on the spot with no undo while the map's trash
+    # had one; the panel is the surface you actually click, so a misclick there
+    # was the easiest way to lose a listing. Both now share archiveWithUndo.
+    trash = "const b=[...document.querySelectorAll('.archiver-row .archiver-rowbtn')].find(x=>x.textContent==='🗑'); b&&b.click();"
+    d.execute_script(trash)
+    time.sleep(0.4)
+    mid = d.execute_script("""
+      return {rows:[...document.querySelectorAll('.archiver-row')].filter(r=>r.style.display!=='none').length,
+              toast:!!document.querySelector('.archiver-toast .archiver-undo'),
+              archived:Object.keys(window.__cats.archived).length};
+    """)
+    check("trash from panel removes the row", mid["rows"] == 1, str(mid))
+    check("...and offers an undo before committing", mid["toast"] and mid["archived"] == 0, str(mid))
+    d.execute_script("document.querySelector('.archiver-toast .archiver-undo').click();")
+    time.sleep(0.4)
+    undone = d.execute_script("""
+      return {rows:[...document.querySelectorAll('.archiver-row')].filter(r=>r.style.display!=='none').length,
+              archived:Object.keys(window.__cats.archived).length};
+    """)
+    check("undo puts the row back and archives nothing", undone["rows"] == 2 and undone["archived"] == 0, str(undone))
+    # Let it through this time: the archive must still actually happen.
+    d.execute_script(trash)
+    time.sleep(2.2)
+    check("trash commits once the undo window elapses",
+          d.execute_script("return Object.keys(window.__cats.archived).length") == 1
+          and d.execute_script("return document.querySelectorAll('.archiver-row').length") == 1)
 
     # Map tagging still works: open a pin popup (in-viewport marker), star it
     before = d.execute_script("return Object.keys(window.__cats.starred).length")
@@ -415,6 +519,91 @@ try:
         check("hover highlights the matching pin", hov.get("ok") and hov["before"]==0 and hov["during"]==1 and hov["z"]>=1, str(hov))
         check("un-hover clears the highlight", hov.get("ok") and hov["after"]==0, str(hov))
 
+        # Landing the class is not the same as the pin visibly changing, which is
+        # what "hover a row and its pin lights up" actually promises. The pill is
+        # Google's own element and carries inline styles plus a 200ms transform
+        # transition (a running transition outranks even !important), so measure
+        # the pin's real box AFTER the transition settles.
+        d.execute_script("""
+          document.querySelector('.archiver-row[data-id="c"]')
+            .dispatchEvent(new MouseEvent('mouseenter',{bubbles:false}));
+        """)
+        size0 = d.execute_script("""
+          const el=document.querySelector('.archiver-pill-hover');
+          const r=el?el.getBoundingClientRect():null;
+          return r?{w:Math.round(r.width), h:Math.round(r.height)}:null;
+        """)
+        time.sleep(0.6)
+        lit = d.execute_script("""
+          const el=document.querySelector('.archiver-pill-hover');
+          if(!el) return {err:'not highlighted'};
+          const cs=getComputedStyle(el), r=el.getBoundingClientRect();
+          return {w:Math.round(r.width), h:Math.round(r.height), transform:cs.transform,
+                  scaled: cs.transform.startsWith('matrix(1.3'),
+                  ring: cs.outlineWidth==='3px' && cs.outlineColor==='rgb(224, 17, 95)',
+                  glow: cs.boxShadow.includes('224, 17, 95')};
+        """)
+        check("the pin actually grows, not just gains a class",
+              lit.get("scaled") and size0 and lit["w"] > size0["w"] + 5, f"{size0} -> {lit}")
+        check("and gets a ring you can see across the map",
+              lit.get("ring") and lit.get("glow"), str(lit))
+        d.execute_script("""
+          document.querySelector('.archiver-row[data-id="c"]')
+            .dispatchEvent(new MouseEvent('mouseleave',{bubbles:false}));
+        """)
+
+    # --- two flats, one coordinate -------------------------------------------
+    # Airbnb reports many coordinates rounded to 4dp, which is also the window we
+    # match pins in, so listings in one building are indistinguishable by
+    # position alone (scripts/test-marker-id.js measures 7 such pairs in one real
+    # search). Archiving one used to hide every pin in the building - silently,
+    # permanently, and only on the map, so the panel still listed them.
+    # Two pins, same position, different prices: only the archived one may go.
+    fixture = d.execute_script("""
+      const LAT=-25.9999, LNG=-57.9999, pos=LAT+','+LNG;
+      const mk=(price,tag)=>{ const m=document.createElement('gmp-advanced-marker');
+        m.setAttribute('position',pos); m.dataset.fake=tag;
+        const inner=document.createElement('div'); inner.textContent='Flat in Centro '+price;
+        m.appendChild(inner); document.body.appendChild(m); return m; };
+      const a=mk('$111','A'), b=mk('$222','B');
+      return {ok: !!(document.querySelector('gmp-advanced-marker[data-fake="A"]')
+                   && document.querySelector('gmp-advanced-marker[data-fake="B"]')),
+              lat:LAT, lng:LNG, pos,
+              textA:(a.textContent||''), textB:(b.textContent||'')};
+    """)
+    check("two same-coordinate pins staged", fixture["ok"] and "$111" in fixture["textA"]
+          and "$222" in fixture["textB"], str(fixture))
+    if fixture["ok"] and "$111" in fixture["textA"]:
+        d.execute_script("""
+          const f=arguments[0];
+          window.__cats={starred:{},maybe:{},archived:{ARCH:{title:'archived flat',
+            price:'$111', coord:f.pos, url:'https://www.airbnb.com/rooms/ARCH', ts:1}}};
+          window.__tagcoords={ARCH:{lat:f.lat,lng:f.lng}};
+          window.__ls.forEach(g=>g({archived:{}}));
+        """, fixture)
+        time.sleep(1.2)
+        state = d.execute_script("""
+          const g=t=>document.querySelector('gmp-advanced-marker[data-fake="'+t+'"]');
+          return {a:g('A').style.display, b:g('B').style.display,
+                  aFor:g('A').dataset.archiverHidden||'', bFor:g('B').dataset.archiverHidden||''};
+        """)
+        check("the archived flat's pin is hidden", state["a"] == "none" and state["aFor"] == "ARCH", str(state))
+        check("its neighbour at the same coordinate is NOT hidden", state["b"] != "none", str(state))
+
+        # And the other half that was missing entirely: unarchiving put nothing
+        # back, so the pin stayed gone until Google Maps happened to rebuild it.
+        d.execute_script("""
+          window.__cats={starred:{},maybe:{},archived:{}};
+          window.__ls.forEach(g=>g({archived:{}}));
+        """)
+        time.sleep(1.2)
+        back = d.execute_script("""
+          const a=document.querySelector('gmp-advanced-marker[data-fake="A"]');
+          return {display:a.style.display, flag:a.dataset.archiverHidden||''};
+        """)
+        check("unarchiving brings the pin back", back["display"] != "none" and back["flag"] == "", str(back))
+    d.execute_script("for(const m of document.querySelectorAll('gmp-advanced-marker[data-fake]')) m.remove();")
+
     # --- live price probe: refresh a saved listing's price from Airbnb --------
     # Seed a REAL listing (id + coord taken from this page) with no stored price
     # and let the panel probe it. Proves the whole chain: render -> scoped search
@@ -459,22 +648,49 @@ try:
             check("row is not marked stale after probing", d.execute_script(
                 "const a=document.querySelector('.archiver-row .archiver-row-price'); return a && !a.classList.contains('archiver-row-price--stale')"))
 
-        # A listing nowhere near any real one -> Airbnb returns nothing -> Unavailable
+        # A probe that comes back with nothing is NOT proof of anything: a login
+        # wall, a rate-limit page and a markup change all look identical to it,
+        # and all answer 200. So the first empty answer must not be written down
+        # as "Unavailable" - it must be retried in the background first.
+        # Phase 1: retries parked ten minutes out, so nothing can be concluded.
         d.execute_script("""
-          window.__cats={starred:{DEAD:{title:'gone', url:'https://www.airbnb.com/rooms/DEAD',
+          window.__archiverProbeRetryMs=[600000];
+          window.__cats={starred:{DEAD1:{title:'gone', url:'https://www.airbnb.com/rooms/DEAD1',
             coord:'-25.0001,-57.0001', ts:1}},maybe:{},archived:{}};
-          window.__tagcoords={DEAD:{lat:-25.0001,lng:-57.0001}};
+          window.__tagcoords={DEAD1:{lat:-25.0001,lng:-57.0001}};
+          window.__prices={}; window.__ls.forEach(f=>f({starred:{}}));
+        """)
+        early = None
+        for _ in range(15):
+            time.sleep(1)
+            early = d.execute_script("return window.__prices.DEAD1 || null")
+            if early: break
+        check("an empty probe is not written down as Unavailable on the first try",
+              early is None, str(early))
+        check("row waits rather than claiming a price it doesn't have",
+              "Unavailable" not in d.execute_script(
+                  "const r=document.querySelector('.archiver-row'); return r?r.innerText:''"))
+
+        # Phase 2: same nowhere-listing, retries collapsed - once it has said the
+        # same thing every time, believe it.
+        d.execute_script("""
+          window.__archiverProbeRetryMs=[300,300,300];
+          window.__cats={starred:{DEAD2:{title:'gone', url:'https://www.airbnb.com/rooms/DEAD2',
+            coord:'-25.0002,-57.0002', ts:1}},maybe:{},archived:{}};
+          window.__tagcoords={DEAD2:{lat:-25.0002,lng:-57.0002}};
           window.__prices={}; window.__ls.forEach(f=>f({starred:{}}));
         """)
         dead = None
-        for _ in range(30):
-            dead = d.execute_script("return window.__prices.DEAD || null")
+        for _ in range(60):
+            dead = d.execute_script("return window.__prices.DEAD2 || null")
             if dead: break
             time.sleep(1)
-        check("listing Airbnb won't quote is marked unavailable", dead is not None and dead.get("unavailable") is True, str(dead))
+        check("listing Airbnb won't quote is marked unavailable once retries are spent",
+              dead is not None and dead.get("unavailable") is True, str(dead))
         check("unavailable row says so", "Unavailable" in d.execute_script(
             "const r=document.querySelector('.archiver-row'); return r?r.innerText:''"),
             d.execute_script("const r=document.querySelector('.archiver-row'); return r?r.innerText.split('\\n')[0]:''"))
+        d.execute_script("delete window.__archiverProbeRetryMs;")
 
     # --- host name + link to the conversation --------------------------------
     # Real listing id off this page; its host name is fetched live from the room

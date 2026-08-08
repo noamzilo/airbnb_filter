@@ -12,7 +12,7 @@ INJECT_CSS = "const s=document.createElement('style');s.textContent=arguments[0]
 STUB = r"""
 window.__cats={starred:{},maybe:{},archived:{}};window.__settings={showArchived:false};
 window.__tagcoords={};window.__notes={};window.__order=[];window.__ls=[];
-window.__images={};window.__prices={};window.__hosts={};window.__threads={};
+window.__images={};window.__prices={};window.__hosts={};window.__threads={};window.__collapsed={};
 const fire=(ch)=>window.__ls.forEach(f=>{try{f(ch||{})}catch(e){}});
 const C=["starred","maybe","archived"];
 window.browser={storage:{onChanged:{addListener:f=>window.__ls.push(f)}}};
@@ -33,6 +33,7 @@ window.Store={
     if(v.coord&&isFinite(v.coord.lat)){window.__tagcoords[id]={lat:v.coord.lat,lng:v.coord.lng};n++;}}
     if(n)fire({prices:{}});return n>0;},
   getNotes:async()=>window.__notes,setNote:async(i,t)=>{if(t&&t.trim())window.__notes[i]=t;else delete window.__notes[i];fire({notes:{}});},
+  getCollapsed:async()=>window.__collapsed||{},setCollapsed:async(m)=>{window.__collapsed={...m};fire({collapsed:{}});},
   getOrder:async()=>window.__order,setOrder:async(a)=>{window.__order=a;fire({order:{}});},
   getSettings:async()=>window.__settings,setSetting:async(k,v)=>{window.__settings[k]=v;fire({settings:{}});}
 };

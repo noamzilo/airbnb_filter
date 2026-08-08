@@ -1,4 +1,4 @@
-// Airbnb Archiver — the interceptor (the make-or-break piece).
+// Airbnb Archiver - the interceptor (the make-or-break piece).
 // Rewrites Airbnb's search data BEFORE the page renders it: removes archived
 // listings, and re-injects starred listings Airbnb dropped (so they always show
 // on the map + list). Firefox-only capability (filterResponseData).
@@ -15,27 +15,37 @@ let rewriteDocuments = false;   // opt-in; see Filter.shouldFilter
 let lastCtx = "";             // price context (dates/guests) of the last search seen
 const seen = {};              // session cache: { id: {searchResult,mapResult,viewportPin,coord} }
 
-let refreshing = false;
+/* The archived set IS the feature, so a storage change must never be dropped.
+   The old guard returned early whenever a load was already in flight - and
+   because storage operations are serialised, that in-flight read had already
+   been answered with the pre-change state, so the update was simply lost until
+   some unrelated write happened along. That is "I archived it and it came
+   back," the exact failure this extension exists to prevent. Now a change
+   arriving mid-load just makes the loop go round again. */
+let refreshing = false, refreshPending = false;
 async function refresh() {
-  if (refreshing) return;     // our own persist writes re-enter onChanged
+  if (refreshing) { refreshPending = true; return; }
   refreshing = true;
   try {
-    const { archived = {}, settings = {}, starred = {}, maybe = {}, starredData = {}, tagCoords = {}, images = {}, prices = {} } =
-      await browser.storage.local.get(["archived", "settings", "starred", "maybe", "starredData", "tagCoords", "images", "prices"]);
-    archivedSet = new Set(Object.keys(archived));
-    starredSet = new Set(Object.keys(starred));
-    maybeSet = new Set(Object.keys(maybe));
-    tagCache = starredData;
-    tagCoordsCache = tagCoords;
-    imagesCache = images;
-    pricesCache = prices;
-    showArchived = !!settings.showArchived;
-    rewriteDocuments = !!settings.rewriteDocuments;
+    do {
+      refreshPending = false;
+      const { archived = {}, settings = {}, starred = {}, maybe = {}, starredData = {}, tagCoords = {}, images = {}, prices = {} } =
+        await browser.storage.local.get(["archived", "settings", "starred", "maybe", "starredData", "tagCoords", "images", "prices"]);
+      archivedSet = new Set(Object.keys(archived));
+      starredSet = new Set(Object.keys(starred));
+      maybeSet = new Set(Object.keys(maybe));
+      tagCache = starredData;
+      tagCoordsCache = tagCoords;
+      imagesCache = images;
+      pricesCache = prices;
+      showArchived = !!settings.showArchived;
+      rewriteDocuments = !!settings.rewriteDocuments;
+    } while (refreshPending);
   } finally {
     refreshing = false;
   }
   // A listing tagged just now is usually already in `seen` from the response that
-  // rendered it — harvest its photos/price immediately instead of waiting for the
+  // rendered it - harvest its photos/price immediately instead of waiting for the
   // next search (otherwise the panel shows a lone thumbnail and no price).
   persistFromSeen();
 }
@@ -46,7 +56,7 @@ browser.storage.onChanged.addListener(refresh);
 let coordTimer = null, dataTimer = null, coordDirty = false, dataDirty = false;
 function persistFromSeen() {
   // coords + photos + normalised price for starred + maybe (drive pin colouring
-  // and the panel rows) — prompt
+  // and the panel rows) - prompt
   for (const id of new Set([...starredSet, ...maybeSet])) {
     const s = seen[id];
     if (!s) continue;
@@ -67,7 +77,7 @@ function persistFromSeen() {
       if (!same) { pricesCache[id] = { ...p, ctx: lastCtx, probedAt: Date.now() }; coordDirty = true; }
     }
   }
-  // full objects for starred (drive map re-injection) — heavier, slower
+  // full objects for starred (drive map re-injection) - heavier, slower
   for (const id of starredSet) {
     if (seen[id] && seen[id].coord) { tagCache[id] = JSON.parse(JSON.stringify(seen[id])); dataDirty = true; }
   }
@@ -87,19 +97,31 @@ function flushData() {
   browser.storage.local.set({ starredData: tagCache }).catch(() => {});
 }
 
-function pickObjs(set) {
-  const out = {};
-  for (const id of set) {
-    const o = seen[id] || tagCache[id];
-    if (o && o.coord) out[id] = o;
+/* ---- keep `seen` from growing forever ----
+   This is a warm cache, not a record: its whole job is that a listing you tag
+   right now already has its photos and price to hand. It used to keep every
+   listing of every search in every city, with their full GraphQL objects, for
+   as long as the browser stayed open. Hold the most recent few hundred, plus
+   anything actually tagged (those are the ones persistFromSeen reads). */
+const SEEN_MAX = 500;
+const seenOrder = new Map();   // id -> recency; Map iterates in insertion order
+let seenTick = 0;
+function touchSeen(ids) {
+  for (const id of ids || []) { seenOrder.delete(id); seenOrder.set(id, ++seenTick); }
+  if (seenOrder.size <= SEEN_MAX) return;
+  const keep = new Set([...starredSet, ...maybeSet, ...archivedSet]);
+  for (const id of [...seenOrder.keys()]) {
+    if (seenOrder.size <= SEEN_MAX) break;
+    if (keep.has(id)) continue;
+    seenOrder.delete(id);
+    delete seen[id];
   }
-  return out;
 }
 
 /* ---- core: parse once, learn, remove archived, inject starred ---- */
 function processJson(text) {
   const root = JSON.parse(text);
-  Filter.collectSeen(root, seen);
+  touchSeen(Filter.collectSeen(root, seen));
   persistFromSeen();
   const removed = showArchived ? 0 : Filter.filterNode(root, archivedSet);
   // Map re-injection DISABLED: splicing cached GraphQL objects into a live
@@ -133,7 +155,7 @@ function rewriteHtml(text) {
       catch (e) { console.warn("[Archiver] HTML blob process failed, passing through", e); return full; }
     }
   );
-  // A document we hand back malformed doesn't fail loudly — the parser silently
+  // A document we hand back malformed doesn't fail loudly - the parser silently
   // loses sync, swallows the page up to the next </script>, and paints the raw
   // JSON of a later <script type="application/json"> as class-name soup. Only
   // ship a rewrite that still looks like the document we were given.

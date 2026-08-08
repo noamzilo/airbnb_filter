@@ -1,4 +1,4 @@
-/* Airbnb Archiver — injected UI styles. Namespaced .archiver-* to avoid clashes. */
+/* Airbnb Archiver - injected UI styles. Namespaced .archiver-* to avoid clashes. */
 
 /* Action toolbar on a card: [☆ star] [🗑 trash], top-right. */
 .archiver-actions {
@@ -9,7 +9,7 @@
   display: flex;
   gap: 6px;
 }
-/* Map popup card has its own close "X" at top-right — sit below it. */
+/* Map popup card has its own close "X" at top-right - sit below it. */
 .archiver-actions--map { top: 46px; }
 
 .archiver-btn {
@@ -122,7 +122,7 @@
 /* Curated panel that replaces Airbnb's results column.
    Default is the in-flow mode: the panel is mounted where Airbnb's card grid
    was, so it takes the column's width from the column itself and, crucially,
-   creates no stacking context of its own — Airbnb's popovers (the search
+   creates no stacking context of its own - Airbnb's popovers (the search
    dropdown, menus) paint over it exactly as their own cards would. The old
    fixed overlay is kept as `.archiver-panel-overlay` for the case where the
    card grid can't be found. */
@@ -150,7 +150,10 @@
 }
 .archiver-panel-title { font: 700 15px sans-serif; white-space: nowrap; }
 .archiver-panel-count { flex: 1 1 auto; min-width: 0; font: 12px sans-serif; color: #717171; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.archiver-scope {
+/* Header pills. Kept as separate class names rather than one shared class, so
+   `.archiver-scope` still means exactly the scope button. */
+.archiver-scope,
+.archiver-collapse-all {
   flex: none;
   padding: 4px 10px;
   font: 600 12px sans-serif;
@@ -160,8 +163,11 @@
   border-radius: 999px;
   cursor: pointer;
 }
-.archiver-scope:hover { background: #e6e6e6; }
-.archiver-scope.on { color: #fff; background: #2f80ed; border-color: #2f80ed; }
+.archiver-scope:hover,
+.archiver-collapse-all:hover { background: #e6e6e6; }
+.archiver-scope.on,
+.archiver-collapse-all.on { color: #fff; background: #2f80ed; border-color: #2f80ed; }
+.archiver-collapse-all:disabled { opacity: 0.45; cursor: default; }
 
 /* Separates "on this map" rows from unplaced / elsewhere counts. */
 .archiver-divider {
@@ -180,18 +186,51 @@
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 8px;
+  padding: 8px 14px 8px 8px;   /* right gutter is the scrollbar's lane */
+  /* Hide the native bar entirely: on Windows, Firefox draws an overlay
+     scrollbar that reserves no width and fades out, and NO combination of
+     scrollbar-width / scrollbar-color / scrollbar-gutter changes that
+     (measured: every one gives a 0px gutter). So the panel draws its own,
+     .archiver-sbar below, and this one gets out of its way. */
+  scrollbar-width: none;
 }
+
+/* The panel's own scrollbar: always visible while the list overflows, so it is
+   obvious that there is more below and how far down you are. Geometry is set in
+   syncScrollbar(); the panel is sticky or fixed, so this anchors to it. */
+.archiver-sbar {
+  position: absolute;
+  right: 3px;
+  width: 8px;
+  border-radius: 999px;
+  background: #e8e8e8;
+  z-index: 4;
+}
+.archiver-sbar[hidden] { display: none; }
+.archiver-sbar-thumb {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  border-radius: 999px;
+  background: #9a9a9a;
+  cursor: grab;
+}
+.archiver-sbar-thumb:hover { background: #7b7b7b; }
+.archiver-sbar-thumb:active { cursor: grabbing; background: #666; }
 .archiver-panel-empty { padding: 32px 16px; text-align: center; color: #717171; }
 
-/* In flow the column itself scrolls, exactly as it did with Airbnb's cards, so
-   the list must not become its own scroll container. */
-.archiver-panel:not(.archiver-panel-overlay) .archiver-panel-list {
-  flex: none;
-  overflow-y: visible;
-  overscroll-behavior: auto;
-  padding: 8px 0;
+/* In flow the panel used to grow to the height of the whole list and let the
+   PAGE scroll, exactly as Airbnb's cards did. With a long saved list that meant
+   scrolling the map away to reach the bottom of your own list. So the panel is
+   pinned to the viewport and the list scrolls inside it, with its own bar.
+   `top` and `max-height` are measured in positionPanel (the sticky offset has
+   to clear whatever chrome Airbnb is showing). */
+.archiver-panel:not(.archiver-panel-overlay) {
+  position: sticky;
+  align-self: flex-start;
+  overflow: hidden;
 }
+.archiver-panel:not(.archiver-panel-overlay) .archiver-panel-list { padding: 8px 14px 8px 0; }
 .archiver-panel:not(.archiver-panel-overlay) .archiver-panel-head { padding: 10px 0; }
 
 /* One row per listing: square photo on the left, everything else on the right. */
@@ -268,7 +307,7 @@
   text-overflow: ellipsis;
 }
 .archiver-row-price:hover { text-decoration: underline; }
-/* Quoted for different dates — a live probe is on its way. */
+/* Quoted for different dates - a live probe is on its way. */
 .archiver-row-price--stale { opacity: 0.55; }
 /* Airbnb won't offer this listing for the current dates. */
 .archiver-row-price--muted { font-size: 15px; color: #8a8a8a; }
@@ -317,6 +356,31 @@
 .archiver-rowbtn:hover { background: rgba(40, 40, 40, 1); }
 .archiver-rowbtn.on:nth-child(1) { background: #f5a623; }   /* starred */
 .archiver-rowbtn.on:nth-child(2) { background: #2f80ed; }   /* maybe */
+
+/* Collapsed: the same row, in a strip. It keeps its slot in the list and it
+   keeps its drag handle, so collapsing never reorders anything and never costs
+   you the ability to reorder. Everything that made it tall goes; the photo and
+   the price stay, because those are what you recognise a listing by. */
+.archiver-collapse { background: rgba(40, 40, 40, 0.55); font-size: 12px; }
+.archiver-row--collapsed .archiver-media {
+  flex: 0 0 56px;
+  aspect-ratio: auto;
+  height: 56px;
+}
+.archiver-row--collapsed .archiver-cnav,
+.archiver-row--collapsed .archiver-media-count,
+.archiver-row--collapsed .archiver-row-perday,
+.archiver-row--collapsed .archiver-row-sub,
+.archiver-row--collapsed .archiver-row-host,
+.archiver-row--collapsed .archiver-tabbed { display: none !important; }
+.archiver-row--collapsed .archiver-row-meta { padding: 6px 10px; gap: 0; justify-content: center; }
+.archiver-row--collapsed .archiver-row-price { font: 700 15px/1.15 sans-serif; }
+.archiver-row--collapsed .archiver-row-unit { font-size: 11px; }
+.archiver-row--collapsed .archiver-handle {
+  top: 50%; left: 3px; transform: translateY(-50%);
+  padding: 0 3px; font-size: 13px; box-shadow: none;
+  background: rgba(255, 255, 255, 0.75);
+}
 
 /* The bottom of a row: your note, or the host conversation, under two tabs. */
 .archiver-tabbed {
@@ -418,7 +482,7 @@
 /* On a message thread the bar sits in the blank strip ABOVE the conversation
    (Airbnb's own header band, empty across the middle). It stays fixed, so the
    chat keeps every pixel it had; left/top/width are measured and set inline.
-   One row — the band is only ~80px tall. */
+   One row - the band is only ~80px tall. */
 .archiver-bridge--top {
   bottom: auto;
   transform: none;
@@ -484,10 +548,15 @@
 }
 .archiver-bridge-btn:hover { background: #b8184c; }
 
-/* Hovering a panel row lights up that listing's map pin. */
+/* Hovering a panel row lights up that listing's map pin.
+   Every property here needs !important. The pill is Google's own element and it
+   carries styles that outrank a plain class, so only box-shadow used to land:
+   the scale computed back to the identity matrix and the highlight amounted to
+   a thin dark outline on a small pill, which is why it read as "nothing
+   happens". Measured with getComputedStyle on the live page. */
 .archiver-pill-hover {
-  transform: scale(1.18);
-  outline: 3px solid #222;
-  outline-offset: 1px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45) !important;
+  transform: scale(1.3) !important;
+  outline: 3px solid #e0115f !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 7px rgba(224, 17, 95, 0.3), 0 6px 18px rgba(0, 0, 0, 0.45) !important;
 }

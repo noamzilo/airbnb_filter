@@ -74,7 +74,7 @@ try:
         print("\nPAGE TEXT:", d.execute_script("return document.body.innerText.slice(0,400)"))
 
     # Run the shipped Filter.priceOf over every priced item on this page and
-    # report coverage — a shape we can't normalise shows as "price not captured".
+    # report coverage - a shape we can't normalise shows as "price not captured".
     import pathlib
     d.execute_script((pathlib.Path(__file__).resolve().parent.parent / "extension" / "filter.js")
                      .read_text(encoding="utf-8") + "\nwindow.Filter=Filter;")
